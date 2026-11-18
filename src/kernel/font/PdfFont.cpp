@@ -535,7 +535,8 @@ std::vector<PdfFont::DecodedCode> PdfSimpleFont::decodeCodes(const PdfString& co
         } else {
             int uni = fontEncoding_->getUnicode(b);
             if (uni > 0) dc.text = TextUtil::codePointToUtf8(static_cast<uint32_t>(uni));
-            else if (fontEncoding_->isFontSpecific() || kind_ == Kind::TrueType) dc.text = TextUtil::codePointToUtf8(b);
+            else if (fontEncoding_->isFontSpecific() || kind_ == Kind::TrueType || kind_ == Kind::Type3)
+                dc.text = TextUtil::codePointToUtf8(b);
         }
         if (!newFont_) {
             dc.width = getGlyphWidthForCode(b);
@@ -739,6 +740,12 @@ PdfType0Font::PdfType0Font(PdfDictionaryPtr fontDictionary) : PdfFont(std::move(
                 } catch (...) {
                 }
             }
+        }
+        if (!toUnicode_) {
+            // Predefined Unicode CMaps (UniGB-UCS2-H, UniJIS-UTF16-H, ...): the code is the UTF-16 value.
+            const std::string& cmapName = cmapEncoding_->getCmapName();
+            if (cmapName.rfind("Uni", 0) == 0 && (cmapName.find("UCS2") != std::string::npos || cmapName.find("UTF16") != std::string::npos))
+                toUnicode_ = io::CMapToUnicode::getIdentity();
         }
         if (!toUnicode_) {
             auto info = cidFont->getAsDictionary(PdfName::CIDSystemInfo);

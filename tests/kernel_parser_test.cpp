@@ -81,6 +81,33 @@ TEST(roundTripExtraction) {
     EXPECT_EQ(PdfTextExtractor::getTextFromPage(doc.getPage(1), simple), std::string("First line of text\nSecond column"));
 }
 
+// Ports of PdfTextExtractorTest assertions
+static std::string extract(const std::string& file) {
+    PdfDocument doc(std::make_unique<PdfReader>(parserRes("PdfTextExtractorTest/" + file)));
+    return PdfTextExtractor::getTextFromPage(doc.getPage(1));
+}
+
+TEST(pdfTextExtractorJavaCases) {
+    if (!fs::exists(parserRes("PdfTextExtractorTest"))) return;
+    EXPECT_EQ(extract("noSpecifiedDictionaryInProperties.pdf"), std::string(""));
+    EXPECT_EQ(extract("noPropertiesInResources.pdf"), std::string(""));
+    EXPECT_EQ(extract("type3NoCMap.pdf"), std::string("*0*"));
+    EXPECT_EQ(extract("noBaseEncoding.pdf"), std::string("HELLO WORLD"));
+    EXPECT_EQ(extract("simpleFontWithoutEncodingToUnicode.pdf"), std::string("MyriadPro-Bold font."));
+    EXPECT_EQ(extract("simpleFontWithPartialToUnicode.pdf"), std::string("Registered"));
+    EXPECT_EQ(extract("type0FontToUnicode.pdf"), std::string("\xE2\x82\xAC 390"));
+    EXPECT_EQ(extract("diacriticShiftedLessThanTwo.pdf"),
+              std::string("\xE0\xA4\xB8\xE0\xA4\x82\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\x95\xE0\xA5\x83\xE0\xA4\xA4 \xE0\xA4\xAE\xE0\xA5\x8D"));
+    EXPECT_EQ(extract("diacriticShiftedMoreThanTwo.pdf"),
+              std::string("\xE0\xA5\x83\n\xE0\xA4\xB8\xE0\xA4\x82\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\x95\xE0\xA5\x83\xE0\xA4\xA4 \xE0\xA4\xAE\xE0\xA5\x8D"));
+    EXPECT_EQ(extract("shortOctalDataAsText.pdf"), std::string("EC"));
+    std::string cyr = extract("notDefaultCodespacesCyrillic.pdf");
+    EXPECT_TRUE(cyr.find("\xD0\xB1\xD1\x80\xD0\xBE\xD0\xBD\xD0\xB8\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5") != std::string::npos);
+    EXPECT_TRUE(cyr.find("From") != std::string::npos);
+    std::string mixed = extract("SameCidForDifferentCodes.pdf");
+    EXPECT_TRUE(mixed.find("18\xE4\xB8\xAA\xE6\x9C\x88") != std::string::npos);
+}
+
 TEST(extractAllReferenceParserPdfs) {
     fs::path dir = parserRes("PdfTextExtractorTest");
     if (!fs::exists(dir)) return;
