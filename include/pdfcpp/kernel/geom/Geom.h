@@ -78,6 +78,26 @@ private:
     std::array<float, 3> vals_;
 };
 
+class Rectangle;
+
+/// Port of com.itextpdf.kernel.geom.LineSegment.
+class LineSegment {
+public:
+    LineSegment() = default;
+    LineSegment(const Vector& startPoint, const Vector& endPoint) : startPoint_(startPoint), endPoint_(endPoint) {}
+    const Vector& getStartPoint() const { return startPoint_; }
+    const Vector& getEndPoint() const { return endPoint_; }
+    float getLength() const { return endPoint_.subtract(startPoint_).length(); }
+    Rectangle getBoundingRectangle() const;
+    LineSegment transformBy(const Matrix& m) const { return LineSegment(startPoint_.cross(m), endPoint_.cross(m)); }
+    bool containsSegment(const LineSegment& other) const { return containsPoint(other.startPoint_) && containsPoint(other.endPoint_); }
+    bool containsPoint(const Vector& point) const;
+
+private:
+    Vector startPoint_;
+    Vector endPoint_;
+};
+
 /// Port of com.itextpdf.kernel.geom.AffineTransform.
 class AffineTransform {
 public:

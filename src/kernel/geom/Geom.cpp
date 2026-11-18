@@ -81,6 +81,20 @@ Vector Vector::normalize() const {
 
 std::string Vector::toString() const { return fmt(vals_[0]) + "," + fmt(vals_[1]) + "," + fmt(vals_[2]); }
 
+// ---------------------------------------------------------------- LineSegment
+Rectangle LineSegment::getBoundingRectangle() const {
+    float x1 = startPoint_.get(0), y1 = startPoint_.get(1), x2 = endPoint_.get(0), y2 = endPoint_.get(1);
+    return Rectangle(std::min(x1, x2), std::min(y1, y2), std::fabs(x2 - x1), std::fabs(y2 - y1));
+}
+
+bool LineSegment::containsPoint(const Vector& point) const {
+    Vector diff1 = point.subtract(startPoint_);
+    if (diff1.get(0) < 0 || diff1.get(1) < 0 || diff1.get(2) < 0) return false;
+    Vector diff2 = endPoint_.subtract(point);
+    if (diff2.get(0) < 0 || diff2.get(1) < 0 || diff2.get(2) < 0) return false;
+    return true;
+}
+
 // ---------------------------------------------------------------- AffineTransform
 AffineTransform::AffineTransform(const std::vector<float>& matrix) {
     m00_ = matrix[0];

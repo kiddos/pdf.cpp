@@ -295,9 +295,10 @@ public:
     static constexpr int UNITS_NORMALIZATION = 1000;
 
     virtual ~FontProgram() = default;
-    static float convertTextSpaceToGlyphSpace(float value) { return value * UNITS_NORMALIZATION; }
-    static float convertGlyphSpaceToTextSpace(float value) { return value / UNITS_NORMALIZATION; }
-    static double convertGlyphSpaceToTextSpace(double value) { return value / UNITS_NORMALIZATION; }
+    // Note: names follow the Java API exactly (TextSpaceToGlyphSpace divides by 1000).
+    static float convertTextSpaceToGlyphSpace(float value) { return value / UNITS_NORMALIZATION; }
+    static float convertGlyphSpaceToTextSpace(float value) { return value * UNITS_NORMALIZATION; }
+    static double convertGlyphSpaceToTextSpace(double value) { return value * UNITS_NORMALIZATION; }
 
     int countOfGlyphs() const { return std::max(static_cast<int>(codeToGlyph_.size()), fontMetrics_.getNumberOfGlyphs()); }
     const FontNames& getFontNames() const { return fontNames_; }

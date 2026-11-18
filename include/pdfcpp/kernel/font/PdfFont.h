@@ -42,10 +42,10 @@ public:
     virtual void writeText(const std::string& text, PdfOutputStream& stream);
 
     int getWidth(int unicode);
-    float getWidth(int unicode, float fontSize) { return io::FontProgram::convertGlyphSpaceToTextSpace(getWidth(unicode) * fontSize); }
+    float getWidth(int unicode, float fontSize) { return io::FontProgram::convertTextSpaceToGlyphSpace(getWidth(unicode) * fontSize); }
     int getWidth(const std::string& text);
     float getWidth(const std::string& text, float fontSize) {
-        return io::FontProgram::convertGlyphSpaceToTextSpace(getWidth(text) * fontSize);
+        return io::FontProgram::convertTextSpaceToGlyphSpace(getWidth(text) * fontSize);
     }
     float getDescent(const std::string& text, float fontSize);
     float getDescent(int unicode, float fontSize);
@@ -71,7 +71,10 @@ public:
         std::string text;
         float width;  // glyph space (1/1000 em, before Tz/Tc/Tw)
         bool isSpace; // single byte 32 (word spacing applies)
+        Bytes code;   // raw character code bytes
     };
+    /// Average glyph width (glyph space), used when the space glyph is missing.
+    virtual int getAverageWidth() const { return fontProgram_ ? fontProgram_->getAvgWidth() : 0; }
     virtual std::vector<DecodedCode> decodeCodes(const PdfString& content) = 0;
 
 protected:
@@ -81,6 +84,9 @@ protected:
     static std::string updateSubsetPrefix(const std::string& fontName, bool isSubset, bool isEmbedded);
     PdfStreamPtr getPdfFontStream(const Bytes& fontStreamBytes, const std::vector<int>& fontStreamLengths);
     PdfDictionaryPtr getFontDescriptor(const std::string& fontName);
+    /// Reads Ascent/Descent/CapHeight/... of an existing font descriptor into the font program metrics.
+    void readFontDescriptorMetrics(const PdfDictionaryPtr& descriptor);
+    std::map<int, io::Glyph> docGlyphs_;
 
     std::shared_ptr<io::FontProgram> fontProgram_;
     std::map<int, io::Glyph> notdefGlyphs_;
@@ -112,6 +118,7 @@ public:
     float getGlyphWidthForCode(int code) const override;
     std::array<double, 6> getFontMatrix() const override { return fontMatrix_; }
     io::FontEncoding* getFontEncoding() const { return fontEncoding_.get(); }
+    int getAverageWidth() const override;
     void setForceWidthsOutput(bool v) { forceWidthsOutput_ = v; }
 
 protected:
@@ -145,6 +152,7 @@ public:
     float getContentWidth(const PdfString& content) override;
     std::vector<DecodedCode> decodeCodes(const PdfString& content) override;
     float getGlyphWidthForCode(int code) const override;
+    int getAverageWidth() const override;
     void writeText(const io::GlyphLine& text, int from, int to, PdfOutputStream& stream) override;
     void writeText(const std::string& text, PdfOutputStream& stream) override;
 

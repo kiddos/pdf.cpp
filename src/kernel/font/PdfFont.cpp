@@ -229,6 +229,21 @@ PdfDictionaryPtr PdfFont::getFontDescriptor(const std::string& fontName) {
     return fontDescriptor;
 }
 
+void PdfFont::readFontDescriptorMetrics(const PdfDictionaryPtr& descriptor) {
+    if (!descriptor || !fontProgram_) return;
+    auto& m = fontProgram_->getFontMetrics();
+    if (auto v = descriptor->getAsNumber(PdfName::Ascent)) m.setTypoAscender(v->intValue());
+    if (auto v = descriptor->getAsNumber(PdfName::Descent)) m.setTypoDescender(v->intValue());
+    if (auto v = descriptor->getAsNumber(PdfName::CapHeight)) m.setCapHeight(v->intValue());
+    if (auto v = descriptor->getAsNumber(PdfName::XHeight)) m.setXHeight(v->intValue());
+    if (auto v = descriptor->getAsNumber(PdfName::ItalicAngle)) m.setItalicAngle(v->floatValue());
+    if (auto v = descriptor->getAsNumber(PdfName::StemV)) m.setStemV(v->intValue());
+    if (auto bbox = descriptor->getAsArray(PdfName::FontBBox)) {
+        auto a = bbox->toIntArray();
+        if (a.size() == 4) m.setBbox(a[0], a[1], a[2], a[3]);
+    }
+}
+
 // ============================================================ PdfSimpleFont
 PdfSimpleFont::PdfSimpleFont(std::shared_ptr<io::FontProgram> fontProgram, const std::string& encodingIn, bool embedded,
                              Kind kind)
@@ -348,6 +363,7 @@ void PdfSimpleFont::initFromDictionary() {
         } catch (...) {
         }
     }
+    if (!standard) readFontDescriptorMetrics(descriptor);
     // widths
     auto widths = dict.getAsArray(PdfName::Widths);
     auto firstCharN = dict.getAsNumber(PdfName::FirstChar);
@@ -391,7 +407,40 @@ float PdfSimpleFont::getGlyphWidthForCode(int code) const {
     return missingWidth_;
 }
 
+int PdfSimpleFont::getAverageWidth() const {
+    if (newFont_) return fontProgram_->getAvgWidth();
+    float total = 0;
+    int count = 0;
+    for (int i = 0; i < 256; ++i)
+        if (hasWidth_[i] && widths_[i] > 0) {
+            total += getGlyphWidthForCode(i);
+            ++count;
+        }
+    return count ? static_cast<int>(total / count) : 0;
+}
+
 const Glyph* PdfSimpleFont::getGlyph(int unicode) {
+    if (!newFont_) {
+        auto it = docGlyphs_.find(unicode);
+        if (it != docGlyphs_.end()) return &it->second;
+        int code = -1;
+        if (toUnicode_) {
+            auto rev = toUnicode_->createReverseMapping();
+            auto r = rev.find(unicode);
+            if (r != rev.end()) code = r->second;
+        }
+        if (code < 0) {
+            for (int c = 0; c < 256; ++c)
+                if (fontEncoding_->getUnicode(c) == unicode) {
+                    code = c;
+                    break;
+                }
+        }
+        if (code < 0 && fontEncoding_->isFontSpecific() && unicode < 256) code = unicode;
+        if (code < 0 || code > 255) return nullptr;
+        auto ins = docGlyphs_.emplace(unicode, Glyph(code, static_cast<int>(getGlyphWidthForCode(code)), unicode));
+        return &ins.first->second;
+    }
     if (!fontEncoding_->canEncode(unicode)) return nullptr;
     const Glyph* glyph = nullptr;
     if (fontEncoding_->isFontSpecific()) {
@@ -479,6 +528,7 @@ std::vector<PdfFont::DecodedCode> PdfSimpleFont::decodeCodes(const PdfString& co
     for (uint8_t b : bytes) {
         DecodedCode dc;
         dc.isSpace = b == 32;
+        dc.code = Bytes{b};
         const std::u32string* tu = toUnicode_ ? toUnicode_->lookup(&b, 1) : nullptr;
         if (tu) {
             dc.text = u32ToUtf8(*tu);
@@ -653,6 +703,7 @@ PdfType0Font::PdfType0Font(PdfDictionaryPtr fontDictionary) : PdfFont(std::move(
     auto descendants = dict.getAsArray(PdfName::DescendantFonts);
     PdfDictionaryPtr cidFont = descendants ? descendants->getAsDictionary(0) : nullptr;
     if (cidFont) {
+        readFontDescriptorMetrics(cidFont->getAsDictionary(PdfName::FontDescriptor));
         if (auto dw = cidFont->getAsNumber(PdfName::DW)) defaultWidth_ = dw->floatValue();
         if (auto w = cidFont->getAsArray(PdfName::W)) {
             int i = 0;
@@ -700,7 +751,28 @@ PdfType0Font::PdfType0Font(PdfDictionaryPtr fontDictionary) : PdfFont(std::move(
     }
 }
 
+int PdfType0Font::getAverageWidth() const {
+    if (newFont_) return fontProgram_->getAvgWidth();
+    if (cidWidths_.empty()) return static_cast<int>(defaultWidth_);
+    float total = 0;
+    for (const auto& kv : cidWidths_) total += kv.second;
+    return static_cast<int>(total / cidWidths_.size());
+}
+
 const Glyph* PdfType0Font::getGlyph(int unicode) {
+    if (!newFont_) {
+        auto it = docGlyphs_.find(unicode);
+        if (it != docGlyphs_.end()) return &it->second;
+        if (!toUnicode_ || toUnicode_->isIdentity()) {
+            auto ins = docGlyphs_.emplace(unicode, Glyph(unicode, static_cast<int>(getGlyphWidthForCode(unicode)), unicode));
+            return &ins.first->second;
+        }
+        auto rev = toUnicode_->createReverseMapping();
+        auto r = rev.find(unicode);
+        if (r == rev.end()) return nullptr;
+        auto ins = docGlyphs_.emplace(unicode, Glyph(r->second, static_cast<int>(getGlyphWidthForCode(r->second)), unicode));
+        return &ins.first->second;
+    }
     const Glyph* glyph = fontProgram_->getGlyph(unicode);
     if (!glyph) {
         auto it = notdefGlyphs_.find(unicode);
@@ -764,6 +836,7 @@ std::vector<PdfFont::DecodedCode> PdfType0Font::decodeCodes(const PdfString& con
     for (const auto& code : cmapEncoding_->decode(bytes)) {
         DecodedCode dc;
         dc.isSpace = code.length == 1 && code.code == 32;
+        dc.code.assign(bytes.begin() + pos, bytes.begin() + pos + code.length);
         const std::u32string* tu = toUnicode_ ? toUnicode_->lookup(bytes.data() + pos, code.length) : nullptr;
         if (tu) {
             dc.text = u32ToUtf8(*tu);
