@@ -1,0 +1,6 @@
+file(GLOB PDFCPP_EXAMPLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+foreach(src ${PDFCPP_EXAMPLE_SOURCES})
+  get_filename_component(name ${src} NAME_WE)
+  add_executable(${name} ${src})
+  target_link_libraries(${name} PRIVATE pdfcpp)
+endforeach()
