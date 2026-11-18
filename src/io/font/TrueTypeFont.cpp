@@ -93,7 +93,7 @@ void TrueTypeFont::parse(int ttcIndex) {
         fontMetrics_.setTypoAscender(n(s16(o + 68)));
         fontMetrics_.setTypoDescender(n(s16(o + 70)));
         fontMetrics_.setWinAscender(n(u16(o + 74)));
-        fontMetrics_.setWinDescender(n(u16(o + 76)));
+        fontMetrics_.setWinDescender(-n(u16(o + 76)));
         if (os2Version >= 2 && os2->length >= 90) {
             fontMetrics_.setXHeight(n(s16(o + 86)));
             fontMetrics_.setCapHeight(n(s16(o + 88)));
