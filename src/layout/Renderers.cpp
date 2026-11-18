@@ -5,6 +5,7 @@
 
 #include "pdfcpp/io/font/PdfEncodings.h"
 #include "pdfcpp/io/util/TextUtil.h"
+#include "pdfcpp/kernel/pdf/Navigation.h"
 #include "pdfcpp/kernel/pdf/xobject/PdfXObject.h"
 
 namespace pdfcpp {
@@ -994,6 +995,16 @@ void ParagraphRenderer::drawChildren(DrawContext& drawContext) {
                 ++j;
             }
             tr->drawGlyphs(drawContext, io::GlyphLine(glyphs), runX, baseline, runWidth);
+            if (auto* link = dynamic_cast<Link*>(tr->getModelElement())) {
+                kernel::PdfDocument* doc = drawContext.getDocument();
+                int pageNumber = occupiedArea_.getPageNumber();
+                if (doc && doc->getWriter() && pageNumber >= 1 && pageNumber <= doc->getNumberOfPages()) {
+                    Rectangle rect(runX, baseline + tr->getDescent(), runWidth, tr->getAscent() - tr->getDescent());
+                    auto annot = kernel::PdfAnnotation::createLink(rect);
+                    annot->setAction(kernel::PdfAction::createURI(link->getUri()));
+                    doc->getPage(pageNumber)->addAnnotation(annot->getPdfObject());
+                }
+            }
             i = std::max(j, i + 1);
         }
         lineTop -= line.height;

@@ -315,15 +315,12 @@ using ImagePtr = std::shared_ptr<Image>;
 class Paragraph : public BlockElement<Paragraph> {
 public:
     Paragraph() = default;
-    explicit Paragraph(const std::string& text) { add(std::make_shared<Text>(text)); }
-    explicit Paragraph(TextPtr text) { add(std::move(text)); }
-    Paragraph& add(const std::string& text) { return add(std::make_shared<Text>(text)); }
-    Paragraph& add(TextPtr text) {
-        childElements_.push_back(std::move(text));
-        return *this;
-    }
-    Paragraph& add(ImagePtr image) {
-        childElements_.push_back(std::move(image));
+    explicit Paragraph(const std::string& text) { add(IElementPtr(std::make_shared<Text>(text))); }
+    explicit Paragraph(TextPtr text) { add(IElementPtr(std::move(text))); }
+    Paragraph& add(const std::string& text) { return add(IElementPtr(std::make_shared<Text>(text))); }
+    template <typename E>
+    Paragraph& add(std::shared_ptr<E> element) {
+        childElements_.push_back(std::static_pointer_cast<IElement>(std::move(element)));
         return *this;
     }
     Paragraph& add(IElementPtr element) {

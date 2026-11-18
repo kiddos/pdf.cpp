@@ -132,17 +132,6 @@ void PdfResources::buildResources(const PdfDictionary& dictionary) {
     }
 }
 
-static const char* prefixFor(const PdfNamePtr& resType) {
-    const std::string& v = resType->getValue();
-    if (v == "Font") return "F";
-    if (v == "XObject") return "Xo";  // overridden for images/forms
-    if (v == "ExtGState") return "Gs";
-    if (v == "Properties") return "Pr";
-    if (v == "ColorSpace") return "Cs";
-    if (v == "Pattern") return "P";
-    if (v == "Shading") return "Sh";
-    return "R";
-}
 
 PdfNamePtr PdfResources::addResource(const PdfObjectPtr& resource, const PdfNamePtr& resType, const std::string& prefix) {
     PdfObject* key = resource.get();
@@ -665,16 +654,13 @@ namespace {
 /// Copy filter skipping /Parent (the new page gets a new parent) and /Annots handled separately.
 class PageCopyFilter : public ICopyFilter {
 public:
-    explicit PageCopyFilter(const PdfObject* page) : page_(page) {}
+    explicit PageCopyFilter(const PdfObject*) {}
     bool shouldProcess(PdfObject* newParent, PdfName* name, PdfObject*) override {
         if (name && name->getValue() == "Parent") return false;
         // /P back-pointer of annotations to their original page
         if (name && name->getValue() == "P" && newParent && newParent->isDictionary()) return false;
         return true;
     }
-
-private:
-    const PdfObject* page_;
 };
 }  // namespace
 
@@ -705,6 +691,12 @@ std::shared_ptr<PdfPage> PdfPage::copyTo(PdfDocument* toDocument) {
             if (!a) continue;
             auto subtype = a->getAsName(PdfName::Subtype);
             if (nameEquals(subtype, PdfName::Popup)) continue;
+            if (nameEquals(subtype, PdfName::Link)) {
+                // internal links point to pages of the source document: drop them (as iText does when the
+                // target page is not copied)
+                auto action = a->getAsDictionary(PdfName::A);
+                if (a->containsKey(PdfName::Dest) || (action && nameEquals(action->getAsName(PdfName::S), PdfName::GoTo))) continue;
+            }
             auto copy = pdf_cast<PdfDictionary>(a->copyTo(toDocument, false, filter));
             if (copy) {
                 copy->put(PdfName::P, dict);
