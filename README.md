@@ -103,6 +103,12 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
   (incl. extended + checksum), `BarcodeQRCode` with a native encoder whose output was verified to be
   bit-identical to iText's `qrcode.Encoder` for numeric/alphanumeric/byte data at every EC level.
 
+**forms**
+* `PdfAcroForm` (get/create, field lookup by qualified name, add/remove/rename, default resources and
+  appearance, `flattenFields`/`partialFormFlattening`), `PdfFormField` (values, flags, fonts/sizes/colors,
+  justification, borders/backgrounds, appearance regeneration for text, multiline, password, choice and
+  checkbox fields), `TextFormFieldBuilder`, `CheckBoxFormFieldBuilder`, `ChoiceFormFieldBuilder`.
+
 **layout**
 * `Document`, `Canvas`, `showTextAligned`.
 * Elements: `Paragraph`, `Text`, `Link`, `Div`, `Image`, `List`/`ListItem` (bullets, decimal, roman,
@@ -117,7 +123,8 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
 
 ## Not (yet) ported
 
-These Java modules/features are not part of this port: `forms` (AcroForms), `sign` (digital
+These Java modules/features are not part of this port: XFA and the more exotic `forms` features
+(radio groups builder, push buttons, signature fields, XFDF), `sign` (digital
 signatures), the remaining barcodes (PDF417, DataMatrix, Codabar, Inter25, MSI, Postnet,
 EAN supplements), `svg`, `styled-xml-parser`, `pdfa`/`pdfua` validation, `hyph` (hyphenation),
 font-asian CMaps (predefined CJK CMaps other than the Unicode ones), XMP metadata modelling (raw XMP
