@@ -49,7 +49,7 @@ int main() {
 ```
 
 More in `examples/`: `hello_world`, `report` (lists, multi-page tables with repeating headers,
-outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `extract_text`.
+outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `extract_text`, `sign`.
 
 ### Differences from the Java API
 
@@ -109,6 +109,13 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
   justification, borders/backgrounds, appearance regeneration for text, multiline, password, choice and
   checkbox fields), `TextFormFieldBuilder`, `CheckBoxFormFieldBuilder`, `ChoiceFormFieldBuilder`.
 
+**signatures** (OpenSSL)
+* `PdfSigner::signDetached` — incremental-update signing with `adbe.pkcs7.detached` CMS signatures
+  (SHA-1/256/384/512), visible or invisible signature fields; `PrivateKey`/`Certificate` loading from
+  PEM or PKCS#12 and self-signed test certificates.
+* `SignatureUtil` — signature discovery, `/ByteRange` coverage check and CMS integrity verification.
+  Results agree with poppler's `pdfsig` on the Java test-suite's signed PDFs.
+
 **layout**
 * `Document`, `Canvas`, `showTextAligned`.
 * Elements: `Paragraph`, `Text`, `Link`, `Div`, `Image`, `List`/`ListItem` (bullets, decimal, roman,
@@ -124,8 +131,9 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
 ## Not (yet) ported
 
 These Java modules/features are not part of this port: XFA and the more exotic `forms` features
-(radio groups builder, push buttons, signature fields, XFDF), `sign` (digital
-signatures), the remaining barcodes (PDF417, DataMatrix, Codabar, Inter25, MSI, Postnet,
+(radio groups builder, push buttons, XFDF), the advanced `sign` features (PAdES B-T/LT/LTA, timestamps,
+OCSP/CRL, certificate-chain validation, external/two-phase signing, CAdES signing-certificate
+attributes), the remaining barcodes (PDF417, DataMatrix, Codabar, Inter25, MSI, Postnet,
 EAN supplements), `svg`, `styled-xml-parser`, `pdfa`/`pdfua` validation, `hyph` (hyphenation),
 font-asian CMaps (predefined CJK CMaps other than the Unicode ones), XMP metadata modelling (raw XMP
 bytes can be set), tagged PDF / structure tree, optional content (layers), public-key encryption,
