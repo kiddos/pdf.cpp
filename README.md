@@ -98,6 +98,11 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
 * Navigation: `PdfOutline`, `PdfDestination`, `PdfAction`, `PdfAnnotation` (link, text, square,
   free text, highlight), `PdfMerger`, `PdfSplitter`.
 
+**barcodes**
+* `Barcode128` (code sets A/B/C, auto switching, FNC1), `BarcodeEAN` (EAN-13, EAN-8, UPC-A), `Barcode39`
+  (incl. extended + checksum), `BarcodeQRCode` with a native encoder whose output was verified to be
+  bit-identical to iText's `qrcode.Encoder` for numeric/alphanumeric/byte data at every EC level.
+
 **layout**
 * `Document`, `Canvas`, `showTextAligned`.
 * Elements: `Paragraph`, `Text`, `Link`, `Div`, `Image`, `List`/`ListItem` (bullets, decimal, roman,
@@ -113,7 +118,8 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
 ## Not (yet) ported
 
 These Java modules/features are not part of this port: `forms` (AcroForms), `sign` (digital
-signatures), `barcodes`, `svg`, `styled-xml-parser`, `pdfa`/`pdfua` validation, `hyph` (hyphenation),
+signatures), the remaining barcodes (PDF417, DataMatrix, Codabar, Inter25, MSI, Postnet,
+EAN supplements), `svg`, `styled-xml-parser`, `pdfa`/`pdfua` validation, `hyph` (hyphenation),
 font-asian CMaps (predefined CJK CMaps other than the Unicode ones), XMP metadata modelling (raw XMP
 bytes can be set), tagged PDF / structure tree, optional content (layers), public-key encryption,
 GSUB/GPOS shaping, CFF subsetting (CFF-based OpenType fonts are embedded whole), flex/grid/float layouts,
