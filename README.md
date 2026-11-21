@@ -49,7 +49,10 @@ int main() {
 ```
 
 More in `examples/`: `hello_world`, `report` (lists, multi-page tables with repeating headers,
-outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `extract_text`, `sign`.
+outlines), `barcodes` (QR Code, Code 128, EAN-13, Code 39), `forms` (AcroForm fields and optional
+flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page footers), `stamp`
+(watermark an existing PDF, optional append mode), `merge`, `split`, `encrypt` (AES-256),
+`extract_text`, `edit_text` (find and replace text in an existing PDF), `sign`, and `verify_signature`.
 
 ### Differences from the Java API
 
