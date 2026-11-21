@@ -198,6 +198,8 @@ public:
     /// Reads the next operator with its operands (the operator literal is the last element). Returns false at end.
     bool parse(std::vector<PdfObjectPtr>& ls);
     PdfObjectPtr readObject();
+    /// Byte offset just past the last token read (pdfcpp extension, used to splice edited content streams).
+    int64_t getPosition() const;
 
 private:
     PdfDictionaryPtr readDictionary();

@@ -97,6 +97,11 @@ outlines), `stamp` (watermark an existing PDF, optional append mode), `merge`, `
   expectations are reproduced in `tests/kernel_parser_test.cpp`.
 * Navigation: `PdfOutline`, `PdfDestination`, `PdfAction`, `PdfAnnotation` (link, text, square,
   free text, highlight), `PdfMerger`, `PdfSplitter`.
+* Text editing (pdfcpp extension, no iText kernel equivalent): `PdfTextEditor` finds and replaces text in
+  existing content streams — literal, regex or custom matching per `BT … ET` block; matches may span
+  `TJ` kerning and separately positioned words; the replacement reuses the original font (only glyphs a
+  subset font is known to contain) and falls back to a configurable font per character; optional
+  layout preservation; edits form XObjects too. Only the changed operators are rewritten.
 
 **barcodes**
 * `Barcode128` (code sets A/B/C, auto switching, FNC1), `BarcodeEAN` (EAN-13, EAN-8, UPC-A), `Barcode39`

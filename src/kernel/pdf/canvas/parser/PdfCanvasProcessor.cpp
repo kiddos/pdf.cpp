@@ -226,6 +226,8 @@ PdfCanvasParser::PdfCanvasParser(const Bytes& content, PdfResources* resources)
 
 PdfCanvasParser::~PdfCanvasParser() = default;
 
+int64_t PdfCanvasParser::getPosition() const { return impl_->tokeniser.getPosition(); }
+
 bool PdfCanvasParser::nextValidToken() {
     while (impl_->tokeniser.nextToken())
         if (impl_->tokeniser.getTokenType() != io::PdfTokenizer::TokenType::Comment) return true;
