@@ -59,6 +59,8 @@ static const EVP_CIPHER* aesEcb(size_t keyLen) {
 
 static Bytes runCipher(const EVP_CIPHER* cipher, const Bytes& key, const uint8_t* iv, const Bytes& data, bool padding,
                        bool encrypt) {
+    // OpenSSL reads exactly the cipher's key length from key.data(): never hand it a shorter buffer.
+    if (key.size() != 16 && key.size() != 24 && key.size() != 32) throw PdfException("Invalid AES key length.");
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     EVP_CipherInit_ex(ctx, cipher, nullptr, key.data(), iv, encrypt ? 1 : 0);
     EVP_CIPHER_CTX_set_padding(ctx, padding ? 1 : 0);
@@ -142,10 +144,15 @@ PdfEncryption::PdfEncryption(const Bytes& userPassword, const Bytes& ownerPasswo
     Bytes owner = ownerPassword.empty() ? CryptoUtil::randomBytes(16) : ownerPassword;
     switch (encryptionAlgorithm_) {
         case EncryptionConstants::STANDARD_ENCRYPTION_40:
+            embeddedFilesOnly_ = false;  // as in Java: 40-bit RC4 has no crypt filters
             setupByUserPassword40or128(userPassword, owner, permissions, 40, 2, true);
             break;
         case EncryptionConstants::STANDARD_ENCRYPTION_128:
-            setupByUserPassword40or128(userPassword, owner, permissions, 128, encryptMetadata_ ? 3 : 4, encryptMetadata_);
+            // Java writes R3/V2 when metadata is encrypted, which cannot express "embedded files only" (strings and
+            // streams would then be written in clear while the dictionary claims they are encrypted). Use R4/V4
+            // crypt filters whenever they are needed.
+            setupByUserPassword40or128(userPassword, owner, permissions, 128, encryptMetadata_ && !embeddedFilesOnly_ ? 3 : 4,
+                                       encryptMetadata_);
             break;
         case EncryptionConstants::ENCRYPTION_AES_128:
             aes_ = true;
@@ -158,6 +165,23 @@ PdfEncryption::PdfEncryption(const Bytes& userPassword, const Bytes& ownerPasswo
             break;
     }
     dictionary_->put(PdfName::Filter, PdfName::Standard);
+}
+
+void PdfEncryption::putCryptFilters(PdfDictionary& d, const PdfDictionaryPtr& stdcf) const {
+    if (embeddedFilesOnly_) {
+        // Strings and streams stay in clear (Identity); only embedded files use the standard filter.
+        stdcf->put(PdfName::AuthEvent, PdfName::EFOpen);
+        d.put(PdfName::EFF, PdfName::StdCF);
+        d.put(PdfName::StrF, PdfName::Identity);
+        d.put(PdfName::StmF, PdfName::Identity);
+    } else {
+        stdcf->put(PdfName::AuthEvent, PdfName::DocOpen);
+        d.put(PdfName::StrF, PdfName::StdCF);
+        d.put(PdfName::StmF, PdfName::StdCF);
+    }
+    auto cf = std::make_shared<PdfDictionary>();
+    cf->put(PdfName::StdCF, stdcf);
+    d.put(PdfName::CF, cf);
 }
 
 void PdfEncryption::setupByUserPassword40or128(const Bytes& userPassword, const Bytes& ownerPassword, int permissions,
@@ -192,13 +216,8 @@ void PdfEncryption::setupByUserPassword40or128(const Bytes& userPassword, const 
         d.put(PdfName::Length, makeNumber(keyLengthBits));
         auto stdcf = std::make_shared<PdfDictionary>();
         stdcf->put(PdfName::Length, makeNumber(16));
-        stdcf->put(PdfName::AuthEvent, PdfName::DocOpen);
         stdcf->put(PdfName::CFM, aes_ ? PdfName::AESV2 : PdfName::V2);
-        auto cf = std::make_shared<PdfDictionary>();
-        cf->put(PdfName::StdCF, stdcf);
-        d.put(PdfName::CF, cf);
-        d.put(PdfName::StrF, PdfName::StdCF);
-        d.put(PdfName::StmF, PdfName::StdCF);
+        putCryptFilters(d, stdcf);
         if (!encryptMetadata) d.put(PdfName::EncryptMetadata, PdfBoolean::FALSE_VALUE);
     }
 }
@@ -328,13 +347,8 @@ void PdfEncryption::setupAes256(const Bytes& userPassword, const Bytes& ownerPas
     d.put(PdfName::Length, makeNumber(256));
     auto stdcf = std::make_shared<PdfDictionary>();
     stdcf->put(PdfName::Length, makeNumber(32));
-    stdcf->put(PdfName::AuthEvent, PdfName::DocOpen);
     stdcf->put(PdfName::CFM, PdfName::AESV3);
-    auto cf = std::make_shared<PdfDictionary>();
-    cf->put(PdfName::StdCF, stdcf);
-    d.put(PdfName::CF, cf);
-    d.put(PdfName::StrF, PdfName::StdCF);
-    d.put(PdfName::StmF, PdfName::StdCF);
+    putCryptFilters(d, stdcf);
     if (!encryptMetadata) d.put(PdfName::EncryptMetadata, PdfBoolean::FALSE_VALUE);
 }
 
@@ -393,6 +407,8 @@ PdfEncryption::PdfEncryption(const PdfDictionaryPtr& pdfDict, const Bytes& passw
             keyLength_ = 256;
             encryptionAlgorithm_ = EncryptionConstants::ENCRYPTION_AES_256;
             aes_ = true;
+            if (d.getAsName(PdfName::EFF) && nameEquals(d.getAsName(PdfName::StmF), PdfName::Identity))
+                embeddedFilesOnly_ = true;
             break;
         default:
             throw PdfException(format(KernelExceptionMessageConstant::UNKNOWN_ENCRYPTION_TYPE_R, revision_));
@@ -448,6 +464,10 @@ void PdfEncryption::readAes256(const Bytes& password) {
     Bytes oeB = oe ? oe->getValueBytes() : Bytes(32, 0);
     Bytes ueB = ue ? ue->getValueBytes() : Bytes(32, 0);
     if (ownerKey_.size() < 48 || userKey_.size() < 48) throw PdfException("Bad /O or /U for AES-256 encryption");
+    // /OE and /UE are the 32-byte encrypted file key; anything shorter would yield a short AES-256 key.
+    if (oeB.size() < 32 || ueB.size() < 32) throw PdfException("Bad /OE or /UE for AES-256 encryption");
+    oeB.resize(32);
+    ueB.resize(32);
     Bytes u48(userKey_.begin(), userKey_.begin() + 48);
     Bytes empty;
     Bytes zeroIv(16, 0);
@@ -466,6 +486,7 @@ void PdfEncryption::readAes256(const Bytes& password) {
         mkey_ = CryptoUtil::aesCbcDecrypt(k, zeroIv, ueB, false);
         openedWithFullPermissions_ = false;
     }
+    if (mkey_.size() != 32) throw PdfException("Bad /OE or /UE for AES-256 encryption");
     auto permsStr = d.getAsString(PdfName::Perms);
     if (permsStr) {
         Bytes perms = CryptoUtil::aesEcbDecrypt(mkey_, permsStr->getValueBytes());
@@ -496,6 +517,7 @@ Bytes PdfEncryption::computeUserPassword(const Bytes& ownerPassword) const {
         }
     }
     // strip padding
+    if (userPad.size() != 32) return userPad;  // malformed /O: no padding to strip (and PAD is only 32 bytes)
     for (size_t i = 0; i < 32; ++i) {
         if (std::equal(userPad.begin() + i, userPad.end(), PAD)) return Bytes(userPad.begin(), userPad.begin() + i);
     }
@@ -530,6 +552,7 @@ Bytes PdfEncryption::encryptByteArray(const Bytes& b) {
 
 Bytes PdfEncryption::decryptByteArray(const Bytes& b) {
     if (aes_) {
+        if (key_.empty()) return b;
         if (b.size() < 16) return Bytes();
         Bytes iv(b.begin(), b.begin() + 16);
         Bytes data(b.begin() + 16, b.end());

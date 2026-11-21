@@ -529,7 +529,7 @@ std::vector<PdfFont::DecodedCode> PdfSimpleFont::decodeCodes(const PdfString& co
         DecodedCode dc;
         dc.isSpace = b == 32;
         dc.code = Bytes{b};
-        const std::u32string* tu = toUnicode_ ? toUnicode_->lookup(&b, 1) : nullptr;
+        std::optional<std::u32string> tu = toUnicode_ ? toUnicode_->lookup(&b, 1) : std::nullopt;
         if (tu) {
             dc.text = u32ToUtf8(*tu);
         } else {
@@ -844,7 +844,8 @@ std::vector<PdfFont::DecodedCode> PdfType0Font::decodeCodes(const PdfString& con
         DecodedCode dc;
         dc.isSpace = code.length == 1 && code.code == 32;
         dc.code.assign(bytes.begin() + pos, bytes.begin() + pos + code.length);
-        const std::u32string* tu = toUnicode_ ? toUnicode_->lookup(bytes.data() + pos, code.length) : nullptr;
+        std::optional<std::u32string> tu =
+            toUnicode_ ? toUnicode_->lookup(bytes.data() + pos, code.length) : std::nullopt;
         if (tu) {
             dc.text = u32ToUtf8(*tu);
         } else if (newFont_) {
@@ -902,13 +903,14 @@ PdfStreamPtr PdfType0Font::getToUnicode() {
     }
     buf << "endcmap\nCMapName currentdict /CMap defineresource pop\nend end\n";
     auto stream = std::make_shared<PdfStream>(toBytes(buf.str()));
-    stream->makeIndirect(getPdfObject()->getIndirectReference()->getDocument());
+    PdfIndirectReference* ref = getPdfObject()->getIndirectReference();
+    stream->makeIndirect(ref ? ref->getDocument() : nullptr);
     return stream;
 }
 
 void PdfType0Font::flushFontData() {
     auto& dict = *getPdfObject();
-    PdfDocument* doc = dict.getIndirectReference()->getDocument();
+    PdfDocument* doc = dict.getIndirectReference() ? dict.getIndirectReference()->getDocument() : nullptr;
     auto* ttf = dynamic_cast<io::TrueTypeFont*>(fontProgram_.get());
     std::string fontName = updateSubsetPrefix(fontProgram_->getFontNames().getFontName(), subset_ && !ttf->isCff(), embedded_);
 
@@ -981,12 +983,22 @@ std::shared_ptr<PdfFont> PdfFontFactory::createFont(std::shared_ptr<io::FontProg
         return std::make_shared<PdfSimpleFont>(type1, encoding, embedded, PdfSimpleFont::Kind::Type1);
     auto ttf = std::dynamic_pointer_cast<io::TrueTypeFont>(fontProgram);
     if (!ttf) throw PdfException(KernelExceptionMessageConstant::UNSUPPORTED_FONT);
+    const std::string licensingMessage =
+        std::string(KernelExceptionMessageConstant::CANNOT_BE_EMBEDDED_DUE_TO_LICENSING_RESTRICTIONS)
+            .replace(0, 3, ttf->getFontNames().getFontName() + ttf->getFontNames().getStyle());
+    if (encoding == io::PdfEncodings::IDENTITY_H || encoding == io::PdfEncodings::IDENTITY_V) {
+        // Port of createType0FontFromTrueTypeFontProgram: a Type0 font with a TrueType program is always embedded,
+        // so licensing restrictions and FORCE_NOT_EMBEDDED are errors rather than silently ignored.
+        if (!ttf->getFontNames().allowEmbedding()) throw PdfException(licensingMessage);
+        if (strategy == EmbeddingStrategy::FORCE_NOT_EMBEDDED)
+            throw PdfException(
+                KernelExceptionMessageConstant::CANNOT_CREATE_TYPE_0_FONT_WITH_TRUE_TYPE_FONT_PROGRAM_WITHOUT_EMBEDDING_IT);
+        return std::make_shared<PdfType0Font>(ttf, encoding, true);
+    }
     if (!ttf->getFontNames().allowEmbedding()) {
-        if (strategy == EmbeddingStrategy::FORCE_EMBEDDED) throw PdfException("Font cannot be embedded due to licensing restrictions.");
+        if (strategy == EmbeddingStrategy::FORCE_EMBEDDED) throw PdfException(licensingMessage);
         embedded = false;
     }
-    if (encoding == io::PdfEncodings::IDENTITY_H || encoding == io::PdfEncodings::IDENTITY_V)
-        return std::make_shared<PdfType0Font>(ttf, encoding, true);
     return std::make_shared<PdfSimpleFont>(ttf, encoding, embedded, PdfSimpleFont::Kind::TrueType);
 }
 

@@ -85,6 +85,10 @@ inline constexpr const char* UNKNOWN_ENCRYPTION_TYPE_V = "Unknown encryption typ
 inline constexpr const char* BAD_USER_PASSWORD = "Bad user password. Password is not provided or wrong password provided.";
 inline constexpr const char* BAD_CERTIFICATE_AND_KEY = "Bad public key certificate and/or private key.";
 inline constexpr const char* UNSUPPORTED_FONT = "Unsupported font.";
+inline constexpr const char* CANNOT_BE_EMBEDDED_DUE_TO_LICENSING_RESTRICTIONS =
+    "{0} cannot be embedded due to licensing restrictions.";
+inline constexpr const char* CANNOT_CREATE_TYPE_0_FONT_WITH_TRUE_TYPE_FONT_PROGRAM_WITHOUT_EMBEDDING_IT =
+    "Cannot create Type0 font with true type font program without embedding it.";
 inline constexpr const char* FONT_PROVIDER_NOT_SET_FONT_FAMILY_NOT_RESOLVED =
     "FontProvider and FontSet are empty. Cannot resolve font family name (see ElementPropertyContainer#setFontFamily) "
     "without initialized FontProvider.";

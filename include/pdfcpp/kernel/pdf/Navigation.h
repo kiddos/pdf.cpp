@@ -108,13 +108,15 @@ public:
     PdfOutline* getParent() const { return parent_; }
     void addDestination(const std::shared_ptr<PdfDestination>& destination) { content_->put(PdfName::Dest, destination->getPdfObject()); }
     void addAction(const std::shared_ptr<PdfAction>& action) { content_->put(PdfName::A, action->getPdfObject()); }
-    void setOpen(bool open) { open_ = open; }
+    void setOpen(bool open);
     bool isOpen() const { return open_; }
     std::shared_ptr<PdfOutline> addOutline(const std::string& title, int position = -1);
     void removeOutline();
 
 private:
     void rebuildLinks();
+    /// Number of descendants visible when this item is open (PDF 1.7, 12.3.3 /Count semantics).
+    int visibleDescendants() const;
     void initFromDictionary(int depth);
     std::string title_;
     PdfDictionaryPtr content_;

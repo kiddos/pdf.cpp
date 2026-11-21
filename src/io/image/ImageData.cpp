@@ -70,6 +70,8 @@ std::shared_ptr<ImageData> ImageDataFactory::createJpeg(const Bytes& b) {
         if (marker == 0xD9 || marker == 0xDA) break;
         if (pos + 2 > b.size()) break;
         int len = (b[pos] << 8) | b[pos + 1];
+        // A segment length counts its own two bytes; reject lengths that cannot advance or that run past the data.
+        if (len < 2 || pos + static_cast<size_t>(len) > b.size()) break;
         size_t seg = pos + 2;
         if (marker == 0xE0 && len >= 14 && std::memcmp(&b[seg], "JFIF", 4) == 0) {
             int units = b[seg + 7];
@@ -83,6 +85,7 @@ std::shared_ptr<ImageData> ImageDataFactory::createJpeg(const Bytes& b) {
             icc.insert(icc.end(), b.begin() + seg + 14, b.begin() + pos + len);
         } else if ((marker >= 0xC0 && marker <= 0xC3) || (marker >= 0xC5 && marker <= 0xC7) ||
                    (marker >= 0xC9 && marker <= 0xCB) || (marker >= 0xCD && marker <= 0xCF)) {
+            if (len < 8) throw IoException("Jpeg image: corrupted SOF marker.");
             img->setBpc(b[seg]);
             img->setHeight(static_cast<float>((b[seg + 1] << 8) | b[seg + 2]));
             img->setWidth(static_cast<float>((b[seg + 3] << 8) | b[seg + 4]));
@@ -187,6 +190,7 @@ std::shared_ptr<ImageData> ImageDataFactory::createPng(const Bytes& b) {
         size_t data = pos + 8;
         if (data + len > b.size()) break;
         if (type == "IHDR") {
+            if (len < 13) throw IoException("Invalid PNG header.");
             width = static_cast<int>(be32(&b[data]));
             height = static_cast<int>(be32(&b[data + 4]));
             bitDepth = b[data + 8];
@@ -213,6 +217,18 @@ std::shared_ptr<ImageData> ImageDataFactory::createPng(const Bytes& b) {
         pos = data + len + 4;
     }
     if (width <= 0 || height <= 0) throw IoException("Invalid PNG header.");
+    // Allowed bit depths per colour type (PNG spec, table 11.1); anything else is corrupt and would break the
+    // sample arithmetic below (e.g. a zero bit depth divides by zero).
+    bool validDepth = false;
+    switch (colorType) {
+        case 0: validDepth = bitDepth == 1 || bitDepth == 2 || bitDepth == 4 || bitDepth == 8 || bitDepth == 16; break;
+        case 3: validDepth = bitDepth == 1 || bitDepth == 2 || bitDepth == 4 || bitDepth == 8; break;
+        case 2:
+        case 4:
+        case 6: validDepth = bitDepth == 8 || bitDepth == 16; break;
+        default: break;
+    }
+    if (!validDepth) throw IoException("Invalid PNG header: unsupported color type / bit depth combination.");
     int channels = colorType == 0 ? 1 : colorType == 2 ? 3 : colorType == 3 ? 1 : colorType == 4 ? 2 : 4;
     int colorComponents = (colorType == 0 || colorType == 4 || colorType == 3) ? 1 : 3;
     bool hasAlpha = colorType == 4 || colorType == 6;

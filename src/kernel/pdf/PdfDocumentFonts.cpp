@@ -62,15 +62,11 @@ PdfNamePtr PdfResources::addFont(PdfDocument* pdfDocument, PdfFont* font) {
 PdfNamePtr PdfResources::addImage(PdfImageXObject& image) { return addResource(image.getPdfObject(), PdfName::XObject, "Im"); }
 PdfNamePtr PdfResources::addForm(PdfFormXObject& form) { return addResource(form.getPdfObject(), PdfName::XObject, "Fm"); }
 PdfNamePtr PdfResources::addForm(PdfFormXObject& form, const PdfNamePtr& name) {
-    auto existing = getResourceName(form.getPdfObject().get());
-    if (existing) return existing;
+    // Port of Java: if the requested name is taken, fall back to a generated one; otherwise register it under the
+    // given name (which also records it in resourceToName_ and marks the dictionary modified).
     auto xobjects = getPdfObject()->getAsDictionary(PdfName::XObject);
-    if (!xobjects) {
-        xobjects = std::make_shared<PdfDictionary>();
-        getPdfObject()->put(PdfName::XObject, xobjects);
-    }
-    xobjects->put(name, form.getPdfObject());
-    setModifiedFlag(true);
+    if (xobjects && xobjects->containsKey(name)) return addResource(form.getPdfObject(), PdfName::XObject, "Fm");
+    addResource(form.getPdfObject(), PdfName::XObject, name);
     return name;
 }
 PdfNamePtr PdfResources::addExtGState(PdfExtGState& extGState) { return addResource(extGState.getPdfObject(), PdfName::ExtGState, "Gs"); }

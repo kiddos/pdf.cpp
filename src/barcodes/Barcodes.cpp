@@ -277,7 +277,20 @@ int BarcodeEAN::calculateEANParity(const std::string& code) {
     return (10 - (total % 10)) % 10;
 }
 
+namespace {
+/// The bar tables are indexed by digit value: reject codes of the wrong length or with non-digit characters
+/// (Java fails with an ArrayIndexOutOfBoundsException there).
+void checkEanDigits(const std::string& code, size_t expectedLength) {
+    bool ok = code.size() == expectedLength;
+    for (size_t k = 0; ok && k < code.size(); ++k) ok = code[k] >= '0' && code[k] <= '9';
+    if (!ok)
+        throw kernel::PdfException("Invalid EAN/UPC code '" + code + "': expected " + std::to_string(expectedLength) +
+                                   " digits.");
+}
+}  // namespace
+
 std::vector<uint8_t> BarcodeEAN::getBarsEAN13(const std::string& codeStr) {
+    checkEanDigits(codeStr, 13);
     std::vector<int> code;
     for (char c : codeStr) code.push_back(c - '0');
     std::vector<uint8_t> bars{1, 1, 1};
@@ -297,6 +310,7 @@ std::vector<uint8_t> BarcodeEAN::getBarsEAN13(const std::string& codeStr) {
 }
 
 std::vector<uint8_t> BarcodeEAN::getBarsEAN8(const std::string& codeStr) {
+    checkEanDigits(codeStr, 8);
     std::vector<uint8_t> bars{1, 1, 1};
     for (int k = 0; k < 4; ++k) {
         const uint8_t* stripes = BARS_EAN[codeStr[k] - '0'];
@@ -316,13 +330,16 @@ Rectangle BarcodeEAN::getBarcodeSize() const {
     if (font_) height += baseline_ > 0 ? baseline_ - getDescender() : -baseline_ + size_;
     switch (codeType_) {
         case EAN13:
+            checkEanDigits(code_, 13);
             width = x_ * (11 + 12 * 7);
-            if (font_) width += font_->getWidth(std::string(1, code_.empty() ? '0' : code_[0]), size_);
+            if (font_) width += font_->getWidth(std::string(1, code_[0]), size_);
             break;
         case EAN8:
+            checkEanDigits(code_, 8);
             width = x_ * (11 + 8 * 7);
             break;
         case UPCA:
+            checkEanDigits(code_, 12);
             width = x_ * (11 + 12 * 7);
             if (font_)
                 width += font_->getWidth(std::string(1, code_[0]), size_) + font_->getWidth(std::string(1, code_.back()), size_);

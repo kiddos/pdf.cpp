@@ -1,5 +1,6 @@
 #include "pdfcpp/io/font/TrueTypeFont.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "pdfcpp/io/exceptions/IoException.h"
@@ -46,7 +47,8 @@ void TrueTypeFont::parse(int ttcIndex) {
         throw IoException(format(IoExceptionMessageConstant::NOT_A_TRUETYPE_OR_OPENTYPE_FONT, path_));
     int numTables = u16(directoryOffset_ + 4);
     for (int k = 0; k < numTables; ++k) {
-        size_t rec = directoryOffset_ + 12 + 16 * k;
+        size_t rec = directoryOffset_ + 12 + 16 * static_cast<size_t>(k);
+        if (rec + 16 > data_.size()) throw IoException(IoExceptionMessageConstant::UNEXPECTED_END_OF_FILE);
         std::string tag(reinterpret_cast<const char*>(&data_[rec]), 4);
         tables_[tag] = Table{u32(rec + 8), u32(rec + 12)};
     }
@@ -253,10 +255,16 @@ std::map<int, std::pair<int, int>> TrueTypeFont::readCmapSubtable(size_t offset)
         }
         case 12: {
             uint32_t numGroups = u32(offset + 12);
-            for (uint32_t k = 0; k < numGroups; ++k) {
-                size_t g = offset + 16 + 12 * k;
+            // Well-formed fonts have sorted, disjoint groups within the Unicode range, so the total number of mapped
+            // codes is at most 0x110000. Bound the work on malformed (overlapping) groups.
+            uint64_t budget = 2 * 0x110000ULL;
+            for (uint32_t k = 0; k < numGroups && budget > 0; ++k) {
+                size_t g = offset + 16 + 12 * static_cast<size_t>(k);
                 uint32_t startChar = u32(g), endChar = u32(g + 4), startGlyph = u32(g + 8);
-                if (endChar - startChar > 0x10FFFF) continue;
+                if (endChar < startChar || startChar > 0x10FFFF) continue;
+                endChar = std::min<uint32_t>(endChar, 0x10FFFF);  // also keeps `c <= endChar` from wrapping around
+                if (endChar - startChar + 1ULL > budget) endChar = static_cast<uint32_t>(startChar + budget - 1);
+                budget -= endChar - startChar + 1ULL;
                 for (uint32_t c = startChar; c <= endChar; ++c) {
                     int gid = static_cast<int>(startGlyph + (c - startChar));
                     h[static_cast<int>(c)] = {gid, width(gid)};
@@ -322,7 +330,7 @@ void TrueTypeFont::readKerning() {
             int nPairs = u16(sub + 6);
             for (int j = 0; j < nPairs; ++j) {
                 size_t p = sub + 14 + 6 * j;
-                int pair = static_cast<int>(u32(p));
+                int64_t pair = static_cast<int64_t>(u32(p));  // (left << 16) | right, unsigned: left GIDs may be >= 32768
                 int value = s16(p + 4);
                 kerning_[pair] = static_cast<int>(value * 1000.0 / unitsPerEm_);
             }
@@ -522,7 +530,9 @@ std::shared_ptr<FontProgram> FontProgramFactory::createFont(const std::string& f
 }
 
 std::shared_ptr<FontProgram> FontProgramFactory::createFont(const Bytes& fontProgram) {
-    if (fontProgram.size() > 4 && (std::memcmp(fontProgram.data(), "StartFontMetrics", 4) == 0))
+    static const char kAfmMagic[] = "StartFontMetrics";
+    const size_t magicLen = sizeof(kAfmMagic) - 1;
+    if (fontProgram.size() >= magicLen && std::memcmp(fontProgram.data(), kAfmMagic, magicLen) == 0)
         return Type1Font::createFromAfm(fontProgram);
     return std::make_shared<TrueTypeFont>(fontProgram);
 }

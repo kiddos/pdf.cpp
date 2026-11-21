@@ -182,6 +182,7 @@ PdfFormField::DaInfo PdfFormField::parseDefaultAppearance() const {
         }
     }
     if (form_ && info.fontName) info.font = form_->resolveFont(info.fontName);
+    if (!info.font && pendingFont_) info.font = pendingFont_;
     if (!info.font && form_) {
         info.font = form_->getDefaultFont();
         info.fontName = form_->registerFont(info.font);
@@ -207,11 +208,26 @@ void PdfFormField::updateDefaultAppearance(const DaInfo& da) {
     getPdfObject()->setModified();
 }
 
+void PdfFormField::setAcroForm(PdfAcroForm* form) {
+    form_ = form;
+    if (form_ && pendingFont_) {
+        DaInfo da = parseDefaultAppearance();
+        da.font = pendingFont_;
+        da.fontName = form_->registerFont(pendingFont_);
+        pendingFont_ = nullptr;
+        updateDefaultAppearance(da);
+    }
+}
+
 PdfFormField& PdfFormField::setFontAndSize(std::shared_ptr<PdfFont> font, float size) {
     DaInfo da = parseDefaultAppearance();
     if (font && form_) {
         da.font = font;
         da.fontName = form_->registerFont(font);
+    } else if (font) {
+        // Not attached yet: the font can't be registered in /DR, so remember it until setAcroForm().
+        pendingFont_ = font;
+        da.font = font;
     }
     da.fontSize = size;
     updateDefaultAppearance(da);
@@ -235,6 +251,8 @@ PdfFormField& PdfFormField::setColor(const ColorPtr& color) {
 
 PdfFormField& PdfFormField::setJustification(int justification) {
     getPdfObject()->put(PdfName::Q, makeNumber(justification));
+    getPdfObject()->setModified();  // persist even when appearance regeneration is skipped/deferred
+    appearanceDirty_ = true;
     regenerateField();
     return *this;
 }
@@ -254,13 +272,21 @@ static PdfDictionaryPtr mk(const PdfDictionaryPtr& widget, bool create) {
 }
 
 PdfFormField& PdfFormField::setBackgroundColor(const ColorPtr& color) {
-    for (const auto& w : getWidgets()) mk(w, true)->put(PdfName::BG, std::make_shared<PdfArray>(color->getColorValue()));
+    for (const auto& w : getWidgets()) {
+        mk(w, true)->put(PdfName::BG, std::make_shared<PdfArray>(color->getColorValue()));
+        w->setModified();
+    }
+    appearanceDirty_ = true;
     regenerateField();
     return *this;
 }
 
 PdfFormField& PdfFormField::setBorderColor(const ColorPtr& color) {
-    for (const auto& w : getWidgets()) mk(w, true)->put(PdfName::BC, std::make_shared<PdfArray>(color->getColorValue()));
+    for (const auto& w : getWidgets()) {
+        mk(w, true)->put(PdfName::BC, std::make_shared<PdfArray>(color->getColorValue()));
+        w->setModified();
+    }
+    appearanceDirty_ = true;
     regenerateField();
     return *this;
 }
@@ -270,8 +296,19 @@ PdfFormField& PdfFormField::setBorderWidth(float width) {
         auto bs = std::make_shared<PdfDictionary>();
         bs->put(PdfName::W, makeNumber(static_cast<double>(width)));
         w->put(PdfName::BS, bs);
+        w->setModified();
     }
+    appearanceDirty_ = true;
     regenerateField();
+    return *this;
+}
+
+PdfFormField& PdfFormField::setCheckBoxAppearanceOnStateName(const std::string& onStateName) {
+    if (onStateName.empty() || onStateName == "Off") return *this;
+    if (!nameEquals(getFormType(), PdfName::Btn) || getFieldFlag(FF_PUSH_BUTTON) || getFieldFlag(FF_RADIO))
+        return *this;
+    std::string value = getValueAsString();
+    for (const auto& w : getWidgets()) regenerateCheckBoxWidget(w, value, onStateName);
     return *this;
 }
 
@@ -404,15 +441,22 @@ bool PdfFormField::regenerateTextWidget(const PdfDictionaryPtr& widget, const st
     return true;
 }
 
-bool PdfFormField::regenerateCheckBoxWidget(const PdfDictionaryPtr& widget, const std::string& value) {
+bool PdfFormField::regenerateCheckBoxWidget(const PdfDictionaryPtr& widget, const std::string& value,
+                                            const std::string& onStateOverride) {
     auto box = widgetBox(widget);
     float w = box[2], h = box[3];
     if (w <= 0 || h <= 0) return false;
-    // keep existing appearances of read documents
+    // Keep existing appearances of read documents: setValue() only switches /AS between the existing states, so a
+    // value change must not replace custom artwork with the generated check mark. Redraw only when asked to (new
+    // on-state name) or when appearance properties (border, background, ...) changed.
     auto existing = widget->getAsDictionary(PdfName::AP);
-    if (existing && existing->getAsDictionary(PdfName::N) && !getPdfObject()->isModified() && document_->getReader()) return true;
+    if (onStateOverride.empty() && !appearanceDirty_ && existing && existing->getAsDictionary(PdfName::N) &&
+        document_->getReader())
+        return true;
     std::string onState = "Yes";
-    if (existing) {
+    if (!onStateOverride.empty()) {
+        onState = onStateOverride;
+    } else if (existing) {
         auto n = existing->getAsDictionary(PdfName::N);
         if (n)
             for (const auto& k : n->keySet())
@@ -494,12 +538,17 @@ void PdfAcroForm::addField(const PdfFormFieldPtr& field, PdfPage* page) {
     if (document_->getWriter()) field->getPdfObject()->makeIndirect(document_);
     getFields(true)->add(field->getPdfObject());
     getPdfObject()->setModified();
-    if (page) {
-        for (const auto& w : field->getWidgets()) {
-            bool present = false;
-            if (auto annots = page->getPdfObject()->getAsArray(PdfName::Annots)) present = annots->contains(w);
-            if (!present) page->addAnnotation(w);
+    for (const auto& w : field->getWidgets()) {
+        // Without an explicit page, use the page the widget was assigned to (/P, e.g. via a builder's setPage).
+        PdfPage* target = page;
+        if (!target) {
+            auto p = w->getAsDictionary(PdfName::P);
+            if (p) target = document_->getPage(p.get());
         }
+        if (!target) continue;
+        bool present = false;
+        if (auto annots = target->getPdfObject()->getAsArray(PdfName::Annots)) present = annots->contains(w);
+        if (!present) target->addAnnotation(w);
     }
     field->regenerateField();
 }
@@ -634,6 +683,60 @@ static PdfPage* findWidgetPage(PdfDocument* doc, const PdfDictionaryPtr& widget)
     return nullptr;
 }
 
+namespace {
+/// Port of PdfFormXObject.calcAppearanceTransformToAnnotRect: maps the appearance BBox - transformed by the form's
+/// /Matrix - onto the annotation rectangle.
+AffineTransform calcAppearanceTransformToAnnotRect(const PdfStreamPtr& appearance, const Rectangle& annotBBox) {
+    auto bboxArr = appearance->getAsArray(PdfName::BBox);
+    std::vector<float> b = bboxArr && bboxArr->size() == 4 ? bboxArr->toFloatArray() : std::vector<float>{0, 0, 0, 0};
+    double llx = std::min(b[0], b[2]), lly = std::min(b[1], b[3]);
+    double urx = std::max(b[0], b[2]), ury = std::max(b[1], b[3]);
+    auto matrix = appearance->getAsArray(PdfName::Matrix);
+    if (matrix && matrix->size() == 6) {
+        auto m = matrix->toFloatArray();
+        AffineTransform t(m[0], m[1], m[2], m[3], m[4], m[5]);
+        double pts[8] = {b[0], b[1], b[0], b[3], b[2], b[1], b[2], b[3]};
+        double out[8];
+        t.transform(pts, 0, out, 0, 4);
+        llx = std::min({out[0], out[2], out[4], out[6]});
+        lly = std::min({out[1], out[3], out[5], out[7]});
+        urx = std::max({out[0], out[2], out[4], out[6]});
+        ury = std::max({out[1], out[3], out[5], out[7]});
+    }
+    double w = urx - llx, h = ury - lly;
+    AffineTransform at = AffineTransform::getTranslateInstance(-llx, -lly);
+    double scaleX = w == 0 ? 1 : annotBBox.getWidth() / w;
+    double scaleY = h == 0 ? 1 : annotBBox.getHeight() / h;
+    at.preConcatenate(AffineTransform::getScaleInstance(scaleX, scaleY));
+    at.preConcatenate(AffineTransform::getTranslateInstance(annotBBox.getX(), annotBBox.getY()));
+    return at;
+}
+
+/// Port of prepareFieldsForFlattening: a field together with all of its descendant fields.
+void addFieldWithDescendants(const PdfFormFieldPtr& field, std::vector<PdfFormFieldPtr>& out,
+                             std::set<const PdfObject*>& seen, int depth) {
+    if (!field || depth > 64 || !seen.insert(field->getPdfObject().get()).second) return;
+    out.push_back(field);
+    for (const auto& kid : field->getKids()) addFieldWithDescendants(kid, out, seen, depth + 1);
+}
+
+/// Port of removeFieldFromParentAndAcroForm: also prunes parents left without kids.
+void removeFieldFromParentAndAcroForm(const PdfArrayPtr& formFields, const PdfDictionaryPtr& fieldObject, int depth) {
+    if (!fieldObject || depth > 64) return;
+    if (formFields) formFields->remove(fieldObject.get());
+    auto parent = fieldObject->getAsDictionary(PdfName::Parent);
+    if (!parent) return;
+    auto kids = parent->getAsArray(PdfName::Kids);
+    if (!kids) {
+        if (formFields) formFields->remove(parent.get());
+    } else {
+        kids->remove(fieldObject.get());
+        parent->setModified();
+        if (kids->isEmpty()) removeFieldFromParentAndAcroForm(formFields, parent, depth + 1);
+    }
+}
+}  // namespace
+
 void PdfAcroForm::flattenFields() {
     if (!document_->getWriter()) throw PdfException("The document must be opened in writing mode to flatten fields.");
     auto all = getAllFormFields();
@@ -641,9 +744,11 @@ void PdfAcroForm::flattenFields() {
     if (fieldsForFlattening_.empty()) {
         for (auto& kv : all) toFlatten.push_back(kv.second);
     } else {
+        // A named non-terminal field flattens its whole subtree (otherwise its kids' widgets would be orphaned).
+        std::set<const PdfObject*> seen;
         for (const auto& name : fieldsForFlattening_) {
             auto it = all.find(name);
-            if (it != all.end()) toFlatten.push_back(it->second);
+            if (it != all.end()) addFieldWithDescendants(it->second, toFlatten, seen, 0);
         }
     }
     std::map<PdfPage*, std::unique_ptr<PdfCanvas>> canvases;
@@ -669,13 +774,14 @@ void PdfAcroForm::flattenFields() {
             if (appearance && rect && !hidden) {
                 auto& canvas = canvases[page];
                 if (!canvas) canvas = std::make_unique<PdfCanvas>(page, true);
-                auto bboxArr = appearance->getAsArray(PdfName::BBox);
-                Rectangle bbox = bboxArr ? bboxArr->toRectangle() : Rectangle(0, 0, rect->getWidth(), rect->getHeight());
+                if (!appearance->getAsArray(PdfName::BBox))  // tolerate a missing BBox: assume it matches /Rect
+                    appearance->put(PdfName::BBox, std::make_shared<PdfArray>(
+                                                       Rectangle(0, 0, rect->getWidth(), rect->getHeight())));
                 PdfFormXObject xObject(appearance);
-                float sx = bbox.getWidth() != 0 ? rect->getWidth() / bbox.getWidth() : 1;
-                float sy = bbox.getHeight() != 0 ? rect->getHeight() / bbox.getHeight() : 1;
-                canvas->addXObjectWithTransformationMatrix(xObject, sx, 0, 0, sy, rect->getX() - bbox.getX() * sx,
-                                                           rect->getY() - bbox.getY() * sy);
+                AffineTransform at = calcAppearanceTransformToAnnotRect(appearance, *rect);
+                float m[6];
+                at.getMatrix(m);
+                canvas->addXObjectWithTransformationMatrix(xObject, m[0], m[1], m[2], m[3], m[4], m[5]);
             }
             // remove the widget from the page
             auto annots = page->getPdfObject()->getAsArray(PdfName::Annots);
@@ -687,15 +793,7 @@ void PdfAcroForm::flattenFields() {
         }
     }
     // remove flattened fields from the form
-    for (auto& field : toFlatten) {
-        auto fields = getFields(false);
-        if (fields) fields->remove(field->getPdfObject().get());
-        auto parent = field->getPdfObject()->getAsDictionary(PdfName::Parent);
-        if (parent) {
-            auto kids = parent->getAsArray(PdfName::Kids);
-            if (kids) kids->remove(field->getPdfObject().get());
-        }
-    }
+    for (auto& field : toFlatten) removeFieldFromParentAndAcroForm(getFields(false), field->getPdfObject(), 0);
     getPdfObject()->setModified();
     auto fields = getFields(false);
     if (!fields || fields->isEmpty()) document_->getCatalog().remove(PdfName::AcroForm);
@@ -748,6 +846,10 @@ PdfFormFieldPtr TextFormFieldBuilder::createText() {
     auto field = makeField(document_, name_, PdfName::Tx, rect_);
     field->getPdfObject()->put(PdfName::DA, std::make_shared<PdfString>("/Helv 0 Tf 0 g"));
     field->getPdfObject()->put(PdfName::V, std::make_shared<PdfString>(""));
+    // Port of setPageToField: the widget's /P is used by PdfAcroForm::addField(field) to place it.
+    if (page_) field->getPdfObject()->put(PdfName::P, page_->getPdfObject());
+    // Registered in the form's /DR (and written to /DA) once the field is added to a form.
+    if (font_) field->setFont(font_);
     return field;
 }
 

@@ -54,9 +54,14 @@ Bytes FlateDecodeFilter::decodePredictor(const Bytes& in, const PdfDictionary* d
     if (auto o = decodeParams->getAsNumber(PdfName::Colors)) colors = o->intValue();
     int bpc = 8;
     if (auto o = decodeParams->getAsNumber(PdfName::BitsPerComponent)) bpc = o->intValue();
+    // Validate before multiplying: negative factors (whose product may still be positive) or rows wider than the
+    // data itself are malformed parameters; leave the data undecoded as for an unknown predictor.
+    if (width <= 0 || colors <= 0 || bpc <= 0 || bpc > 16) return in;
+    const int64_t rowBits = static_cast<int64_t>(colors) * width * bpc;
+    if (rowBits > (static_cast<int64_t>(in.size()) + 1) * 8) return in;
     int bytesPerPixel = colors * bpc / 8;
     if (bytesPerPixel < 1) bytesPerPixel = 1;
-    int bytesPerRow = (colors * width * bpc + 7) / 8;
+    int bytesPerRow = static_cast<int>((rowBits + 7) / 8);
     if (bytesPerRow <= 0) return in;
 
     if (predictor == 2) {
@@ -229,18 +234,28 @@ Bytes LZWDecodeFilter::LZWDecode(const Bytes& in) {
             out.insert(out.end(), table[code].begin(), table[code].end());
             oldCode = code;
         } else {
-            Bytes entry;
-            if (code < static_cast<int>(table.size())) {
-                entry = table[code];
+            // A corrupt stream may reference codes beyond the next free slot, or follow a clear code with another
+            // clear code (whose table entry is empty); stop decoding rather than index out of bounds.
+            const int tableSize = static_cast<int>(table.size());
+            if (code > tableSize) break;
+            const Bytes& prev = table[oldCode];
+            // The table is full at 4096 entries (12-bit codes): keep decoding but stop adding entries until the
+            // encoder sends a clear code.
+            const bool canAdd = tableSize < 4096 && !prev.empty();
+            if (code < tableSize) {
+                Bytes entry = table[code];
                 out.insert(out.end(), entry.begin(), entry.end());
-                Bytes n = table[oldCode];
-                n.push_back(entry[0]);
-                table.push_back(n);
+                if (canAdd && !entry.empty()) {
+                    Bytes n = prev;
+                    n.push_back(entry[0]);
+                    table.push_back(std::move(n));
+                }
             } else {
-                Bytes n = table[oldCode];
-                n.push_back(table[oldCode][0]);
+                if (prev.empty() || tableSize >= 4096) break;
+                Bytes n = prev;
+                n.push_back(prev[0]);
                 out.insert(out.end(), n.begin(), n.end());
-                table.push_back(n);
+                table.push_back(std::move(n));
             }
             oldCode = code;
             int tableIndex = static_cast<int>(table.size());

@@ -63,6 +63,9 @@ public:
     PdfFormField& setBackgroundColor(const kernel::ColorPtr& color);
     PdfFormField& setBorderColor(const kernel::ColorPtr& color);
     PdfFormField& setBorderWidth(float width);
+    /// Checkboxes: (re)draws the appearances with `onStateName` as the "on" state (port of
+    /// PdfFormAnnotation.setCheckBoxAppearanceOnStateName); setValue(onStateName) then checks the box.
+    PdfFormField& setCheckBoxAppearanceOnStateName(const std::string& onStateName);
     /// Choice fields: /Opt values.
     std::vector<std::string> getOptions() const;
     /// Checkbox/radio: the appearance states other than /Off.
@@ -74,7 +77,8 @@ public:
     /// Regenerates the normal appearance of all widgets.
     bool regenerateField();
     PdfDocument* getDocument() const { return document_; }
-    void setAcroForm(PdfAcroForm* form) { form_ = form; }
+    /// Attaches the field to a form; a font set while detached is registered in the form's /DR now.
+    void setAcroForm(PdfAcroForm* form);
 
 private:
     kernel::PdfObjectPtr getInheritable(const kernel::PdfNamePtr& key) const;
@@ -87,9 +91,14 @@ private:
     DaInfo parseDefaultAppearance() const;
     void updateDefaultAppearance(const DaInfo& da);
     bool regenerateTextWidget(const PdfDictionaryPtr& widget, const std::string& text);
-    bool regenerateCheckBoxWidget(const PdfDictionaryPtr& widget, const std::string& value);
+    bool regenerateCheckBoxWidget(const PdfDictionaryPtr& widget, const std::string& value,
+                                  const std::string& onStateOverride = std::string());
     PdfDocument* document_;
     PdfAcroForm* form_ = nullptr;
+    /// Font set before the field was attached to a form (e.g. by TextFormFieldBuilder::setFont).
+    std::shared_ptr<kernel::PdfFont> pendingFont_;
+    /// Set when appearance-affecting properties change: existing checkbox artwork of read documents is then redrawn.
+    bool appearanceDirty_ = false;
     std::string displayValue_;
     bool hasDisplayValue_ = false;
 };

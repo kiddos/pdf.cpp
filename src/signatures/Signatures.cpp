@@ -418,10 +418,25 @@ SignatureVerificationResult SignatureUtil::verifySignature(const std::string& na
     }
     // signature contents are never encrypted: decode the raw literal
     Bytes contents = io::PdfTokenizer::decodeStringContent(contentsStr->getInternalContent(), contentsStr->isHexWriting());
-    auto br = dict->getAsArray(PdfName::ByteRange)->toLongArray();
+    auto brArray = dict->getAsArray(PdfName::ByteRange);
+    if (!brArray) {
+        result.error = "Missing /ByteRange";
+        return result;
+    }
+    if (document_.getReader() == nullptr) {
+        result.error = "Document has no reader";
+        return result;
+    }
+    auto br = brArray->toLongArray();
     auto file = document_.getReader()->getSafeFile();
+    const int64_t fileLength = file->length();
     Bytes data;
     for (size_t i = 0; i + 1 < br.size(); i += 2) {
+        // Forged ranges must not trigger huge allocations or reads outside the file.
+        if (br[i] < 0 || br[i + 1] < 0 || br[i] > fileLength || br[i + 1] > fileLength - br[i]) {
+            result.error = "Invalid /ByteRange";
+            return result;
+        }
         Bytes part(static_cast<size_t>(br[i + 1]));
         file->seek(br[i]);
         file->readFully(part);

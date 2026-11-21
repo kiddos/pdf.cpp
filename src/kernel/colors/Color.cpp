@@ -65,7 +65,7 @@ std::shared_ptr<Color> Color::makeColor(const std::shared_ptr<PdfColorSpace>& co
         std::vector<float> v = colorValue;
         if (v.empty()) v.assign(n, 0.f);
         if (n == 1) return std::make_shared<DeviceGray>(v[0]);
-        if (n == 3) return std::make_shared<DeviceRgb>(v[0], v[1], v[2]);
+        if (n == 3 && v.size() >= 3) return std::make_shared<DeviceRgb>(v[0], v[1], v[2]);
         if (n == 4 && v.size() >= 4) return std::make_shared<DeviceCmyk>(v[0], v[1], v[2], v[3]);
     }
     std::vector<float> v = colorValue;

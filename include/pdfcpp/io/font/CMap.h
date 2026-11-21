@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,8 +37,9 @@ public:
     static std::shared_ptr<CMapToUnicode> getIdentity();
     static std::shared_ptr<CMapToUnicode> parse(const Bytes& cmap);
     CMapToUnicode() = default;
-    /// Looks up the unicode text for the code formed by `length` bytes; nullptr if absent.
-    const std::u32string* lookup(const uint8_t* code, int length) const;
+    /// Looks up the unicode text for the code formed by `length` bytes; empty optional if absent. Returned by value
+    /// because identity mappings are synthesised on the fly and have no stable storage.
+    std::optional<std::u32string> lookup(const uint8_t* code, int length) const;
     bool hasByteMappings() const { return has1Byte_; }
     bool hasTwoByteMappings() const { return has2Byte_; }
     bool isIdentity() const { return identity_; }

@@ -597,8 +597,8 @@ int PdfArray::indexOf(const PdfObject* o) const {
 std::string PdfArray::toString() const {
     std::string s = "[";
     for (const auto& e : list_) {
-        PdfIndirectReference* ref = e->getIndirectReference();
-        s += ref == nullptr ? e->toString() : ref->toString();
+        PdfIndirectReference* ref = e ? e->getIndirectReference() : nullptr;
+        s += e == nullptr ? std::string("null") : ref == nullptr ? e->toString() : ref->toString();
         s += " ";
     }
     s += "]";
@@ -779,8 +779,9 @@ std::string PdfDictionary::toString() const {
     if (!isFlushed()) {
         std::string s = "<<";
         for (const auto& kv : map_) {
-            PdfIndirectReference* ref = kv.second->getIndirectReference();
-            s += kv.first->toString() + " " + (ref == nullptr ? kv.second->toString() : ref->toString()) + " ";
+            PdfIndirectReference* ref = kv.second ? kv.second->getIndirectReference() : nullptr;
+            std::string value = kv.second == nullptr ? std::string("null") : ref == nullptr ? kv.second->toString() : ref->toString();
+            s += kv.first->toString() + " " + value + " ";
         }
         s += ">>";
         return s;
@@ -811,7 +812,13 @@ PdfDictionaryPtr PdfDictionary::clone(const std::vector<PdfNamePtr>& excludeKeys
             self->map_.erase(it);
         }
     }
-    PdfDictionaryPtr dictionary = std::static_pointer_cast<PdfDictionary>(PdfObject::clone());
+    PdfDictionaryPtr dictionary;
+    try {
+        dictionary = std::static_pointer_cast<PdfDictionary>(PdfObject::clone());
+    } catch (...) {
+        for (const auto& kv : excluded) self->map_.insert(kv);
+        throw;
+    }
     for (const auto& kv : excluded) self->map_.insert(kv);
     return dictionary;
 }

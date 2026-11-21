@@ -278,6 +278,9 @@ private:
         bool breakAllowedBefore;
     };
     void buildPieces();
+    /// Split and overflow parts share the child (text/image) renderers; their parent pointer must refer to the part
+    /// currently being laid out or drawn - the renderer they were created for may be gone (e.g. inside table cells).
+    void adoptChildren();
     std::vector<Piece> pieces_;
     size_t startPiece_ = 0;
     bool piecesBuilt_ = false;

@@ -3,6 +3,7 @@
 #include <cstring>
 #include <set>
 
+#include "pdfcpp/io/exceptions/IoException.h"
 #include "pdfcpp/io/source/RandomAccessSource.h"
 #include "pdfcpp/kernel/crypto/PdfEncryption.h"
 #include "pdfcpp/kernel/pdf/PdfDocument.h"
@@ -102,6 +103,9 @@ Bytes PdfReader::readStreamBytesRaw(PdfStream& stream) {
     int length = stream.getLength();
     if (length <= 0) return Bytes();
     auto file = tokens_->getSafeFile();
+    // /XRef and /ObjStm skip checkPdfStreamLength (as in Java): don't allocate a forged /Length beyond the file.
+    if (offset + static_cast<int64_t>(length) > file->length())
+        throw io::IoException(io::IoExceptionMessageConstant::UNEXPECTED_END_OF_FILE);
     file->seek(offset);
     Bytes bytes(length);
     file->readFully(bytes);
@@ -218,6 +222,9 @@ void PdfReader::readObjectStream(PdfStream& objectStream) {
     int first = firstNum->intValue();
     int n = nNum->intValue();
     Bytes bytes = readStreamBytes(objectStream, true);
+    // Each entry of the header needs at least two numbers ("1 0 "), so /N can't exceed the decoded size.
+    if (n < 0 || first < 0 || static_cast<size_t>(n) > bytes.size())
+        throw MemoryLimitsAwareException("Object stream /N exceeds the limit.");
     auto saveTokens = std::move(tokens_);
     tokens_ = std::make_unique<io::PdfTokenizer>(io::RandomAccessSourceFactory().createSource(bytes));
     try {
@@ -514,7 +521,7 @@ PdfDictionaryPtr PdfReader::readXrefSection() {
     if (!trailer) throw PdfException(KernelExceptionMessageConstant::TRAILER_NOT_FOUND);
     PdfObjectPtr xrs = trailer->get(PdfName::XRefStm);
     if (xrs && xrs->getType() == PdfObject::NUMBER) {
-        int loc = std::static_pointer_cast<PdfNumber>(xrs)->intValue();
+        int64_t loc = std::static_pointer_cast<PdfNumber>(xrs)->longValue();
         try {
             readXrefStream(loc);
             xrefStm_ = true;
@@ -574,6 +581,8 @@ bool PdfReader::readXrefStream(int64_t ptr) {
         Bytes b;
         {
             auto file = tokens_->getSafeFile();
+            if (xrefStream->getOffset() + std::max(0, xrefStream->getLength()) > file->length())
+                throw io::IoException(io::IoExceptionMessageConstant::UNEXPECTED_END_OF_FILE);
             file->seek(xrefStream->getOffset());
             b.resize(std::max(0, xrefStream->getLength()));
             file->readFully(b);
@@ -581,24 +590,35 @@ bool PdfReader::readXrefStream(int64_t ptr) {
         }
         size_t bptr = 0;
         int wc[3];
-        for (int k = 0; k < 3; ++k) wc[k] = w->getAsNumber(k) ? w->getAsNumber(k)->intValue() : 0;
+        for (int k = 0; k < 3; ++k) {
+            wc[k] = w->getAsNumber(k) ? w->getAsNumber(k)->intValue() : 0;
+            // Field widths beyond 8 bytes can't be represented (and negative ones would defeat the bounds check).
+            if (wc[k] < 0 || wc[k] > 8) throw PdfException(KernelExceptionMessageConstant::INVALID_XREF_STREAM);
+        }
         for (int idx = 0; idx + 1 < index->size(); idx += 2) {
-            int start = index->getAsNumber(idx)->intValue();
-            int length = index->getAsNumber(idx + 1)->intValue();
+            auto startNum = index->getAsNumber(idx);
+            auto lengthNum = index->getAsNumber(idx + 1);
+            if (!startNum || !lengthNum) throw PdfException(KernelExceptionMessageConstant::INVALID_XREF_STREAM);
+            int start = startNum->intValue();
+            int length = lengthNum->intValue();
             if (start < 0 || length < 0 || static_cast<int64_t>(start) + length > maxElements)
                 throw MemoryLimitsAwareException("Xref structure size exceeds the limit.");
             xref->setCapacity(start + length);
             while (length-- > 0) {
                 if (bptr + wc[0] + wc[1] + wc[2] > b.size()) break;
-                int type = 1;
+                // Accumulate unsigned so wide fields can't overflow a signed int; narrow afterwards.
+                uint64_t typeField = 1;
                 if (wc[0] > 0) {
-                    type = 0;
-                    for (int k = 0; k < wc[0]; ++k) type = (type << 8) + b[bptr++];
+                    typeField = 0;
+                    for (int k = 0; k < wc[0]; ++k) typeField = (typeField << 8) + b[bptr++];
                 }
-                int64_t field2 = 0;
-                for (int k = 0; k < wc[1]; ++k) field2 = (field2 << 8) + b[bptr++];
-                int field3 = 0;
-                for (int k = 0; k < wc[2]; ++k) field3 = (field3 << 8) + b[bptr++];
+                int type = typeField > 2 ? -1 : static_cast<int>(typeField);
+                uint64_t f2 = 0;
+                for (int k = 0; k < wc[1]; ++k) f2 = (f2 << 8) + b[bptr++];
+                int64_t field2 = static_cast<int64_t>(f2);
+                uint64_t f3 = 0;
+                for (int k = 0; k < wc[2]; ++k) f3 = (f3 << 8) + b[bptr++];
+                int field3 = static_cast<int>(static_cast<uint32_t>(f3));
                 int base = start;
                 PdfIndirectReferencePtr newReference;
                 switch (type) {
@@ -772,18 +792,23 @@ void PdfReader::checkPdfStreamLength(PdfStream& pdfStream) {
             }
             if (line.startsWith(ENDSTREAM)) break;
             if (line.startsWith(ENDOBJ)) {
-                tokens_->seek(pos - 16);
-                std::string s = tokens_->readString(16);
+                int64_t back = std::max<int64_t>(0, pos - 16);
+                tokens_->seek(back);
+                std::string s = tokens_->readString(static_cast<int>(pos - back));
                 auto index = s.find("endstream");
-                if (index != std::string::npos) pos = pos - 16 + static_cast<int64_t>(index);
+                if (index != std::string::npos) pos = back + static_cast<int64_t>(index);
                 break;
             }
         }
         streamLength = static_cast<int>(pos - start);
-        tokens_->seek(pos - 2);
-        if (tokens_->read() == 13) streamLength--;
-        tokens_->seek(pos - 1);
-        if (tokens_->read() == 10) streamLength--;
+        if (pos >= 2) {
+            tokens_->seek(pos - 2);
+            if (tokens_->read() == 13) streamLength--;
+        }
+        if (pos >= 1) {
+            tokens_->seek(pos - 1);
+            if (tokens_->read() == 10) streamLength--;
+        }
         if (streamLength < 0) streamLength = 0;
         pdfNumber->setValue(streamLength);
         pdfStream.updateLength(streamLength);

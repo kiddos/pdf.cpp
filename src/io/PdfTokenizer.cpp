@@ -1,5 +1,6 @@
 #include "pdfcpp/io/source/PdfTokenizer.h"
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "pdfcpp/io/exceptions/IoException.h"
@@ -141,7 +142,8 @@ int64_t PdfTokenizer::getNextEof() {
             }
             searchFrom = eofPosition + 5;
         }
-        file_->seek(file_->getPosition() - 4);
+        // Step back so a "%%EOF" straddling two chunks is still found; never seek before the start of the file.
+        file_->seek(std::max<int64_t>(0, file_->getPosition() - 4));
     } while (str.size() > 4);
     throw IoException(IoExceptionMessageConstant::PDF_EOF_NOT_FOUND);
 }

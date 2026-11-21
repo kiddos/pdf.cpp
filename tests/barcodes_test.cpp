@@ -91,4 +91,22 @@ TEST(barcodesInPdf) {
     EXPECT_TRUE(text.find("*PDFCPP 39*") != std::string::npos);
 }
 
+
+// BUGS.md #29: codes of the wrong length or with non-digits are rejected instead of read out of bounds.
+TEST(eanRejectsInvalidCodes) {
+    EXPECT_THROW(BarcodeEAN::getBarsEAN13("123"));
+    EXPECT_THROW(BarcodeEAN::getBarsEAN13("40063813339A1"));
+    EXPECT_THROW(BarcodeEAN::getBarsEAN8("1234"));
+    io::ByteArrayOutputStream baos;
+    PdfWriter writer(baos);
+    PdfDocument pdf(writer);
+    BarcodeEAN upc(&pdf);
+    upc.setCodeType(BarcodeEAN::UPCA);
+    upc.setCode("12");
+    EXPECT_THROW(upc.getBarcodeSize());
+    upc.setCode("036000291452");
+    EXPECT_TRUE(upc.getBarcodeSize().getWidth() > 0);
+    pdf.close();
+}
+
 TEST_MAIN()

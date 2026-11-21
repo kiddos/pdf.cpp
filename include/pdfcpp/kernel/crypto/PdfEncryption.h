@@ -57,6 +57,7 @@ public:
     Bytes computeUserPassword(const Bytes& ownerPassword) const;
 
 private:
+    void putCryptFilters(PdfDictionary& d, const PdfDictionaryPtr& stdcf) const;
     void setupByUserPassword40or128(const Bytes& userPassword, const Bytes& ownerPassword, int permissions,
                                     int keyLengthBits, int revision, bool encryptMetadata);
     void setupAes256(const Bytes& userPassword, const Bytes& ownerPassword, int permissions, bool encryptMetadata);

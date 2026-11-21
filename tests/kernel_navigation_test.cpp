@@ -97,4 +97,48 @@ TEST(layoutLink) {
     EXPECT_EQ(action->getAsString(PdfName::URI)->getValue(), std::string("https://example.com"));
 }
 
+
+// BUGS.md #11: removing an outline the caller holds no reference to must not touch freed memory, and /Count must
+// count visible descendants at all levels.
+TEST(outlineRemoveAndHierarchicalCount) {
+    io::ByteArrayOutputStream baos;
+    {
+        PdfWriter writer(baos);
+        PdfDocument doc(writer);
+        doc.addNewPage();
+        auto root = PdfOutline::getOutlines(doc);
+        auto a = root->addOutline("A");
+        a->addOutline("A.1")->addOutline("A.1.a");
+        a->addOutline("A.2");
+        root->addOutline("B");
+        // root: A, A.1, A.1.a, A.2, B
+        EXPECT_EQ(root->getContent()->getAsNumber(PdfName::Count)->intValue(), 5);
+        EXPECT_EQ(a->getContent()->getAsNumber(PdfName::Count)->intValue(), 3);
+        a->setOpen(false);
+        EXPECT_EQ(a->getContent()->getAsNumber(PdfName::Count)->intValue(), -3);
+        EXPECT_EQ(root->getContent()->getAsNumber(PdfName::Count)->intValue(), 2);
+        a->setOpen(true);
+        // only the parent's children_ owns "A.1" now
+        PdfOutline* a1 = a->getAllChildren().front().get();
+        a1->removeOutline();
+        EXPECT_EQ(static_cast<int>(a->getAllChildren().size()), 1);
+        EXPECT_EQ(root->getContent()->getAsNumber(PdfName::Count)->intValue(), 3);
+        doc.close();
+    }
+    PdfDocument doc(PdfReader::fromBytes(baos.toByteArray()));
+    auto root = PdfOutline::getOutlines(doc);
+    EXPECT_EQ(static_cast<int>(root->getAllChildren().size()), 2);
+    EXPECT_EQ(root->getAllChildren()[0]->getAllChildren()[0]->getTitle(), std::string("A.2"));
+    doc.close();
+}
+
+// BUGS.md #18
+TEST(splitByNonPositivePageCountThrows) {
+    PdfDocument doc(PdfReader::fromBytes(makeDoc(3, "S")));
+    PdfSplitter splitter(doc);
+    EXPECT_THROW(splitter.splitByPageCount(0));
+    EXPECT_EQ(static_cast<int>(splitter.splitByPageCount(2).size()), 2);
+    doc.close();
+}
+
 TEST_MAIN()

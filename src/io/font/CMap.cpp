@@ -112,9 +112,12 @@ CMapParser::Result CMapParser::parse(const Bytes& cmap) {
                         int len = static_cast<int>(a.bytes.size());
                         uint32_t start = bytesToCode(a.bytes), end = bytesToCode(b.bytes);
                         if (end < start || end - start > 0xFFFF) {
-                            if (c.kind == Token::ArrStart)
-                                while (lex.next().kind != Token::ArrEnd) {
-                                }
+                            if (c.kind == Token::ArrStart) {
+                                Token::Kind k;
+                                do {
+                                    k = lex.next().kind;
+                                } while (k != Token::ArrEnd && k != Token::End);
+                            }
                             continue;
                         }
                         if (c.kind == Token::Str) {
@@ -197,17 +200,13 @@ void CMapToUnicode::addChar(int code, int codeLength, const std::u32string& unic
     else has2Byte_ = true;
 }
 
-const std::u32string* CMapToUnicode::lookup(const uint8_t* code, int length) const {
+std::optional<std::u32string> CMapToUnicode::lookup(const uint8_t* code, int length) const {
     uint32_t v = 0;
     for (int i = 0; i < length; ++i) v = (v << 8) | code[i];
     auto it = map_.find({length, v});
-    if (it != map_.end()) return &it->second;
-    if (identity_ && length == 2) {
-        static thread_local std::u32string tmp;
-        tmp = std::u32string(1, static_cast<char32_t>(v));
-        return &tmp;
-    }
-    return nullptr;
+    if (it != map_.end()) return it->second;
+    if (identity_ && length == 2) return std::u32string(1, static_cast<char32_t>(v));
+    return std::nullopt;
 }
 
 std::map<int, int> CMapToUnicode::createDirectMapping() const {

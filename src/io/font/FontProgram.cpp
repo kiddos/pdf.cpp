@@ -184,6 +184,7 @@ void FontEncoding::fillCustomEncoding() {
             int uniName = AdobeGlyphList::nameToUnicode(name);
             int orderK = order[0] == '\'' ? static_cast<unsigned char>(order[1]) : std::atoi(order.c_str());
             orderK %= 256;
+            if (orderK < 0) continue;  // Java would throw ArrayIndexOutOfBounds; ignore the malformed entry
             unicodeToCode_[uni] = orderK;
             codeToUnicode_[orderK] = uni;
             differences_[orderK] = name;
@@ -192,7 +193,7 @@ void FontEncoding::fillCustomEncoding() {
     } else {
         int k = std::atoi(first.c_str());
         std::string hex;
-        while (tok >> hex && k < 256) {
+        while (k >= 0 && k < 256 && tok >> hex) {
             int uni = static_cast<int>(std::strtol(hex.c_str(), nullptr, 16) % 0x10000);
             std::string name = AdobeGlyphList::unicodeToName(uni);
             if (name.empty()) name = "uni" + hex;

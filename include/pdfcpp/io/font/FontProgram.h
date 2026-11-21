@@ -253,7 +253,9 @@ public:
     int getUnicode(int index) const { return (index >= 0 && index < 256) ? codeToUnicode_[index] : -1; }
     int getUnicodeDifference(int index) const;
     bool hasDifferences() const { return hasDifferences_; }
-    std::string getDifference(int index) const { return hasDifferences_ ? differences_[index] : std::string(); }
+    std::string getDifference(int index) const {
+        return hasDifferences_ && index >= 0 && index < 256 ? differences_[index] : std::string();
+    }
     void setDifference(int index, const std::string& difference) {
         if (hasDifferences_ && index >= 0 && index < 256) differences_[index] = difference;
     }

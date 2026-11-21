@@ -250,12 +250,23 @@ void PdfWriter::flushWaitingObjects(const std::set<PdfIndirectReference*>& forbi
 
 void PdfWriter::flushModifiedWaitingObjects(const std::set<PdfIndirectReference*>& forbiddenToFlush) {
     PdfXrefTable* xref = document_->getXref();
-    for (int i = 1; i < xref->size(); i++) {
-        PdfIndirectReference* indirectReference = xref->get(i);
-        if (indirectReference != nullptr && !indirectReference->isFree() && !forbiddenToFlush.count(indirectReference)) {
+    // Java makes a single pass. Repeat until nothing new gets flushed, so objects that become modified (or are
+    // created) while flushing others - including lower-numbered ones - are written instead of being freed by
+    // PdfDocument::close().
+    bool progress = true;
+    while (progress) {
+        progress = false;
+        for (int i = 1; i < xref->size(); i++) {
+            PdfIndirectReference* indirectReference = xref->get(i);
+            if (indirectReference == nullptr || indirectReference->isFree() ||
+                indirectReference->checkState(PdfObject::FLUSHED) || forbiddenToFlush.count(indirectReference))
+                continue;
             if (indirectReference->checkState(PdfObject::MODIFIED)) {
                 PdfObjectPtr obj = indirectReference->getRefersToPtr(false);
-                if (obj && obj.get() != objectStream_.get()) obj->flush();
+                if (obj && obj.get() != objectStream_.get()) {
+                    obj->flush();
+                    if (indirectReference->checkState(PdfObject::FLUSHED)) progress = true;
+                }
             }
         }
     }

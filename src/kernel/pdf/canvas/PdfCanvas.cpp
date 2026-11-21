@@ -294,7 +294,8 @@ std::vector<std::array<double, 8>> PdfCanvas::bezierArc(double x1, double y1, do
     double xCen = (x1 + x2) / 2., yCen = (y1 + y2) / 2.;
     double rx = (x2 - x1) / 2., ry = (y2 - y1) / 2.;
     double halfAng = fragAngle * M_PI / 360.;
-    double kappa = std::fabs(4. / 3. * (1. - std::cos(halfAng)) / std::sin(halfAng));
+    // A zero extent is a degenerate arc: all control points coincide (Java divides 0 by 0 here and emits NaN).
+    double kappa = halfAng == 0 ? 0. : std::fabs(4. / 3. * (1. - std::cos(halfAng)) / std::sin(halfAng));
     std::vector<std::array<double, 8>> pointList;
     for (int i = 0; i < nFrag; ++i) {
         double theta0 = (startAng + i * fragAngle) * M_PI / 180.;

@@ -89,4 +89,189 @@ TEST(listsTablesImages) {
     EXPECT_TRUE(p2.find("Description") != std::string::npos);
 }
 
+
+namespace {
+struct Word {
+    std::string text;
+    float x, y;
+};
+struct WordCollector : IEventListener {
+    std::vector<Word> words;
+    void eventOccurred(const IEventData& data, EventType type) override {
+        if (type != EventType::RENDER_TEXT) return;
+        const auto& info = static_cast<const TextRenderInfo&>(data);
+        auto start = info.getBaseline().getStartPoint();
+        words.push_back({info.getText(), start.get(0), start.get(1)});
+    }
+    std::set<EventType> getSupportedEvents() const override { return {EventType::RENDER_TEXT}; }
+};
+
+std::vector<Word> wordsOnPage(PdfDocument& doc, int page) {
+    WordCollector collector;
+    PdfCanvasProcessor processor(collector);
+    processor.processPageContent(doc.getPage(page));
+    return collector.words;
+}
+
+const Word* findWord(const std::vector<Word>& words, const std::string& text) {
+    for (const auto& w : words)
+        if (w.text.find(text) != std::string::npos) return &w;
+    return nullptr;
+}
+
+int countOccurrences(PdfDocument& doc, const std::string& needle) {
+    int n = 0;
+    for (int p = 1; p <= doc.getNumberOfPages(); ++p) {
+        std::string text = PdfTextExtractor::getTextFromPage(doc.getPage(p));
+        for (size_t pos = text.find(needle); pos != std::string::npos; pos = text.find(needle, pos + 1)) ++n;
+    }
+    return n;
+}
+}  // namespace
+
+// BUGS.md #33: rows of a row group with a rowspan are stacked, not drawn on top of each other.
+TEST(tableRowspanRowsAreStacked) {
+    std::string path = "layout_rowspan.pdf";
+    {
+        PdfDocument pdf(std::make_unique<PdfWriter>(path));
+        Document document(pdf);
+        auto t = make<Table>(UnitValue::createPercentArray({1, 1}));
+        t->addCell(make<Cell>(3, 1)->add("SPAN"));
+        t->addCell("ROWA");
+        t->addCell("ROWB");
+        t->addCell("ROWC");
+        document.add(t);
+        document.close();
+    }
+    PdfDocument doc(std::make_unique<PdfReader>(path));
+    auto words = wordsOnPage(doc, 1);
+    auto a = findWord(words, "ROWA"), b = findWord(words, "ROWB"), c = findWord(words, "ROWC");
+    EXPECT_TRUE(a && b && c);
+    if (a && b && c) {
+        EXPECT_TRUE(a->y - b->y > 10);
+        EXPECT_TRUE(b->y - c->y > 10);
+    }
+}
+
+// BUGS.md #34 and the related split duplication: cells completed before a row split are not repeated on the next
+// page, a first row that does not fit is split in place, and header cells keep their column order.
+TEST(tableSplitting) {
+    std::string path = "layout_table_split.pdf";
+    {
+        PdfDocument pdf(std::make_unique<PdfWriter>(path));
+        Document document(pdf, PageSize::A4);
+        auto t = make<Table>(UnitValue::createPercentArray({1, 1}));
+        t->addHeaderCell("HEADLEFT");
+        t->addHeaderCell("HEADRIGHT");
+        t->addCell("SHORTCELL");
+        std::string longText;
+        for (int i = 0; i < 400; ++i) longText += "word" + std::to_string(i) + " ";
+        t->addCell(longText);
+        document.add(t);
+        document.close();
+    }
+    PdfDocument doc(std::make_unique<PdfReader>(path));
+    EXPECT_EQ(doc.getNumberOfPages(), 2);
+    EXPECT_EQ(countOccurrences(doc, "SHORTCELL"), 1);
+    EXPECT_EQ(countOccurrences(doc, "word399"), 1);
+    auto words = wordsOnPage(doc, 1);
+    auto left = findWord(words, "HEADLEFT"), right = findWord(words, "HEADRIGHT");
+    EXPECT_TRUE(left && right && left->x < right->x);
+}
+
+TEST(tableFirstRowSplitsInPlace) {
+    std::string path = "layout_table_first_row.pdf";
+    {
+        PdfDocument pdf(std::make_unique<PdfWriter>(path));
+        Document document(pdf, PageSize::A4);
+        for (int i = 0; i < 26; ++i) document.add(make<Paragraph>("filler " + std::to_string(i)));
+        auto t = make<Table>(UnitValue::createPercentArray({1}));
+        std::string longText;
+        for (int i = 0; i < 300; ++i) longText += "w" + std::to_string(i) + " ";
+        t->addCell(longText);
+        document.add(t);
+        document.close();
+    }
+    PdfDocument doc(std::make_unique<PdfReader>(path));
+    EXPECT_TRUE(PdfTextExtractor::getTextFromPage(doc.getPage(1)).find("w0 ") != std::string::npos);
+}
+
+TEST(tableHeaderAndFooterTallerThanPageKeepsRows) {
+    std::string path = "layout_table_huge_header.pdf";
+    {
+        PdfDocument pdf(std::make_unique<PdfWriter>(path));
+        Document document(pdf, PageSize::A4);
+        auto t = make<Table>(UnitValue::createPercentArray({1, 1}));
+        for (int i = 0; i < 40; ++i) t->addHeaderCell("H" + std::to_string(i));
+        for (int i = 0; i < 40; ++i) t->addFooterCell("F" + std::to_string(i));
+        for (int i = 0; i < 6; ++i) t->addCell("BODY" + std::to_string(i));
+        document.add(t);
+        document.close();
+    }
+    PdfDocument doc(std::make_unique<PdfReader>(path));
+    for (int i = 0; i < 6; ++i) EXPECT_EQ(countOccurrences(doc, "BODY" + std::to_string(i)), 1);
+}
+
+// BUGS.md #35: the symbol of a list item split across pages stays left of the text.
+TEST(listItemSplitKeepsSymbolLeft) {
+    std::string path = "layout_list_split.pdf";
+    {
+        PdfDocument pdf(std::make_unique<PdfWriter>(path));
+        Document document(pdf, PageSize::A4);
+        for (int i = 0; i < 25; ++i) document.add(make<Paragraph>("filler " + std::to_string(i)));
+        auto list = make<List>(ListNumberingType::DECIMAL);
+        std::string longText;
+        for (int i = 0; i < 300; ++i) longText += "w" + std::to_string(i) + " ";
+        list->add(longText);
+        document.add(list);
+        document.close();
+    }
+    PdfDocument doc(std::make_unique<PdfReader>(path));
+    EXPECT_EQ(doc.getNumberOfPages(), 2);
+    auto words = wordsOnPage(doc, 1);
+    auto symbol = findWord(words, "1."), text = findWord(words, "w0");
+    EXPECT_TRUE(symbol && text);
+    if (symbol && text) EXPECT_TRUE(symbol->x + 5 < text->x);
+}
+
+// BUGS.md #36: a percentage width given to setFixedPosition is applied once.
+TEST(fixedPositionPercentWidth) {
+    std::string path = "layout_fixed_width.pdf";
+    {
+        PdfDocument pdf(std::make_unique<PdfWriter>(path));
+        Document document(pdf, PageSize::A4);
+        auto p = make<Paragraph>("RIGHTALIGNED");
+        p->setTextAlignment(TextAlignment::RIGHT);
+        p->setFixedPosition(100, 500, UnitValue::createPercentValue(50));
+        document.add(p);
+        document.close();
+    }
+    PdfDocument doc(std::make_unique<PdfReader>(path));
+    auto words = wordsOnPage(doc, 1);
+    auto w = findWord(words, "RIGHTALIGNED");
+    EXPECT_TRUE(w != nullptr);
+    // 50% of the 523pt wide area: the ~90pt wide text ends at x = 100 + 261.5, i.e. starts near 271 (applying the
+    // percentage twice made it end at 100 + 130.75, starting near 140)
+    if (w) EXPECT_NEAR(w->x, 271.5f, 3.f);
+}
+
+// BUGS.md #37: a zero-sized form XObject image does not produce NaN/Inf sizes.
+TEST(zeroSizedImage) {
+    io::ByteArrayOutputStream baos;
+    {
+        PdfWriter writer(baos);
+        PdfDocument pdf(writer);
+        Document document(pdf);
+        auto xobject = std::make_shared<PdfFormXObject>(Rectangle(0, 0, 0, 0));
+        auto img = make<Image>(xobject);
+        img->scaleToFit(100, 100);
+        img->setWidth(50);
+        document.add(img);
+        document.close();
+    }
+    Bytes pdf = baos.toByteArray();
+    std::string s(pdf.begin(), pdf.end());
+    EXPECT_TRUE(s.find("nan") == std::string::npos && s.find("inf") == std::string::npos);
+}
+
 TEST_MAIN()

@@ -329,7 +329,13 @@ LayoutResult BlockRenderer::layout(LayoutContext& layoutContext) {
         for (size_t k = i + 1; k < childRenderers_.size(); ++k) overflow->addChild(childRenderers_[k]);
         split->setPropertyAny(Property::MARGIN_BOTTOM, UnitValue::createPointValue(0));
         overflow->setPropertyAny(Property::MARGIN_TOP, UnitValue::createPointValue(0));
-        if (fixedHeight) overflow->deleteOwnProperty(Property::HEIGHT);
+        if (fixedHeight) {
+            // The overflow part only gets what is left of the fixed height. Shadow the property on the renderer: a
+            // HEIGHT set on the model element would otherwise still apply in full on the next area.
+            float remaining = *fixedHeight - (content.getTop() - lowest);
+            overflow->setPropertyAny(Property::HEIGHT, remaining > EPS ? std::any(UnitValue::createPointValue(remaining))
+                                                                       : std::any());
+        }
         // occupied area of split part
         Rectangle used(content.getX(), lowest, content.getWidth(), content.getTop() - lowest);
         if (getPropertyAsBoolean(Property::FILL_AVAILABLE_AREA_ON_SPLIT) || getPropertyAsBoolean(Property::FILL_AVAILABLE_AREA))
@@ -525,25 +531,30 @@ void ImageRenderer::calculateImageSize(float availableWidth, float availableHeig
         width = *propWidth;
         height = *propHeight;
     } else if (propWidth) {
-        height = *propWidth * h / w;
+        // keep the aspect ratio; a zero-sized image (e.g. an empty form XObject) has none to keep
+        if (w != 0) height = *propWidth * h / w;
         width = *propWidth;
     } else if (propHeight) {
-        width = *propHeight * w / h;
+        if (h != 0) width = *propHeight * w / h;
         height = *propHeight;
     }
     bool autoScale = getPropertyAsBoolean(Property::AUTO_SCALE);
     bool autoScaleWidth = getPropertyAsBoolean(Property::AUTO_SCALE_WIDTH);
     bool autoScaleHeight = getPropertyAsBoolean(Property::AUTO_SCALE_HEIGHT);
     if (autoScale) {
-        float scale = std::min(availableWidth / width, availableHeight / height);
-        width *= scale;
-        height *= scale;
+        if (width != 0 || height != 0) {
+            float scale = width == 0    ? availableHeight / height
+                          : height == 0 ? availableWidth / width
+                                        : std::min(availableWidth / width, availableHeight / height);
+            width *= scale;
+            height *= scale;
+        }
     } else {
         if (autoScaleWidth && !autoScaleHeight) {
-            height = height * availableWidth / width;
+            if (width != 0) height = height * availableWidth / width;
             width = availableWidth;
         } else if (autoScaleHeight && !autoScaleWidth) {
-            width = width * availableHeight / height;
+            if (height != 0) width = width * availableHeight / height;
             height = availableHeight;
         }
     }
@@ -711,8 +722,26 @@ static Leading resolveLeading(const AbstractRenderer& r) {
     return l ? *l : Leading(Leading::MULTIPLIED, 1.35f);
 }
 
+/// Box an inline image occupies in a line: the image plus its paddings, borders and margins (ImageRenderer::draw
+/// places the image inside getInnerAreaBBox(), i.e. inside all three).
+static Rectangle inlineImageOuterBox(const ImageRenderer& ir, float x, float y) {
+    Rectangle r(x, y, ir.getImageWidth(), ir.getImageHeight());
+    ir.applyPaddings(r, true);
+    ir.applyBorderBox(r, true);
+    ir.applyMargins(r, true);
+    return Rectangle(x, y, r.getWidth(), r.getHeight());
+}
+
+void ParagraphRenderer::adoptChildren() {
+    for (auto& child : childRenderers_)
+        if (child) child->setParent(this);
+    for (auto& piece : pieces_)
+        if (piece.source) piece.source->setParent(this);
+}
+
 LayoutResult ParagraphRenderer::layout(LayoutContext& layoutContext) {
     buildPieces();
+    adoptChildren();
     LayoutArea& area = layoutContext.getArea();
     Rectangle parentBBox = area.getBBox();
     float parentWidth = parentBBox.getWidth();
@@ -769,9 +798,9 @@ LayoutResult ParagraphRenderer::layout(LayoutContext& layoutContext) {
             if (p.isImage) {
                 auto* ir = static_cast<ImageRenderer*>(p.source.get());
                 ir->calculateImageSize(line.availableWidth, box.getHeight());
-                auto m = ir->getMargins();
-                pieceWidth = ir->getImageWidth() + m[1] + m[3];
-                pieceAscent = ir->getImageHeight() + m[0] + m[2];
+                Rectangle outer = inlineImageOuterBox(*ir, 0, 0);
+                pieceWidth = outer.getWidth();
+                pieceAscent = outer.getHeight();
                 pieceDescent = 0;
                 p.width = pieceWidth;
                 p.ascent = pieceAscent;
@@ -783,12 +812,11 @@ LayoutResult ParagraphRenderer::layout(LayoutContext& layoutContext) {
             }
             if (x + pieceWidth > line.availableWidth + EPS && !p.isSpace) {
                 if (lastBreak > lineStart) {
-                    // wrap at the last allowed break
+                    // wrap at the last allowed break: items map 1:1 to pieces lineStart..idx-1, so drop those from
+                    // lastBreak on (by index - positions are ambiguous when leading pieces have zero width)
                     idx = lastBreak;
                     x = widthAtBreak;
-                    line.items.erase(std::remove_if(line.items.begin(), line.items.end(),
-                                                    [&](const LineItem& it) { return it.x >= widthAtBreak - EPS && it.x > 0; }),
-                                     line.items.end());
+                    line.items.resize(lastBreak - lineStart);
                     break;
                 }
                 if (idx == lineStart && !p.isImage) {
@@ -894,6 +922,13 @@ LayoutResult ParagraphRenderer::layout(LayoutContext& layoutContext) {
             overflow->continuation_ = true;
             overflow->childRenderers_ = childRenderers_;
             overflow->setPropertyAny(Property::MARGIN_TOP, UnitValue::createPointValue(0));
+            if (fixedHeight) {
+                // as in BlockRenderer: only the rest of a fixed height applies to the next area
+                float remaining = *fixedHeight - usedHeight;
+                overflow->setPropertyAny(Property::HEIGHT, remaining > EPS
+                                                               ? std::any(UnitValue::createPointValue(remaining))
+                                                               : std::any());
+            }
             Rectangle used(box.getX(), box.getTop() - usedHeight, box.getWidth(), usedHeight);
             applyPaddings(used, true);
             applyBorderBox(used, true);
@@ -940,6 +975,7 @@ std::optional<float> ParagraphRenderer::getFirstYLineRecursively() const {
 }
 
 void ParagraphRenderer::drawChildren(DrawContext& drawContext) {
+    adoptChildren();
     TextAlignment alignment = getProperty<TextAlignment>(Property::TEXT_ALIGNMENT).value_or(TextAlignment::LEFT);
     float lineTop = contentBox_.getTop();
     for (const auto& line : lines_) {
@@ -971,8 +1007,7 @@ void ParagraphRenderer::drawChildren(DrawContext& drawContext) {
             }
             if (it.isImage) {
                 auto* ir = static_cast<ImageRenderer*>(it.source.get());
-                auto m = ir->getMargins();
-                Rectangle r(startX + it.x + shift, baseline, ir->getImageWidth() + m[1] + m[3], ir->getImageHeight() + m[0] + m[2]);
+                Rectangle r = inlineImageOuterBox(*ir, startX + it.x + shift, baseline);
                 ir->getOccupiedArea() = LayoutArea(occupiedArea_.getPageNumber(), r);
                 ir->draw(drawContext);
                 ++i;
@@ -1070,6 +1105,9 @@ std::string ListRenderer::makeSymbol(int index) const {
     std::string post = getProperty<std::string>(Property::LIST_SYMBOL_POST_TEXT).value_or(". ");
     if (!type) return std::string();
     std::string num;
+    // Cyclic alphabets: wrap non-positive indices (LIST_START <= 0) into range instead of producing code points
+    // before the alphabet.
+    auto cyclic = [index](int n) { return ((index - 1) % n + n) % n; };
     switch (*type) {
         case ListNumberingType::DECIMAL: num = std::to_string(index); break;
         case ListNumberingType::DECIMAL_LEADING_ZERO: num = (index < 10 ? "0" : "") + std::to_string(index); break;
@@ -1085,9 +1123,9 @@ std::string ListRenderer::makeSymbol(int index) const {
             for (auto& c : num) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             break;
         }
-        case ListNumberingType::GREEK_LOWER: io::TextUtil::appendUtf8(num, 0x3B1 + (index - 1) % 24); break;
-        case ListNumberingType::GREEK_UPPER: io::TextUtil::appendUtf8(num, 0x391 + (index - 1) % 24); break;
-        case ListNumberingType::ZAPF_DINGBATS_1: io::TextUtil::appendUtf8(num, 0x2460 + (index - 1) % 10); break;
+        case ListNumberingType::GREEK_LOWER: io::TextUtil::appendUtf8(num, 0x3B1 + cyclic(24)); break;
+        case ListNumberingType::GREEK_UPPER: io::TextUtil::appendUtf8(num, 0x391 + cyclic(24)); break;
+        case ListNumberingType::ZAPF_DINGBATS_1: io::TextUtil::appendUtf8(num, 0x2460 + cyclic(10)); break;
     }
     return pre + num + post;
 }
@@ -1145,10 +1183,22 @@ LayoutResult ListItemRenderer::layout(LayoutContext& layoutContext) {
     Rectangle& bbox = ctx.getArea().getBBox();
     bbox.setX(bbox.getX() + symbolAreaWidth_).setWidth(bbox.getWidth() - symbolAreaWidth_);
     LayoutResult result = BlockRenderer::layout(ctx);
+    // Give back the symbol area: the occupied area (used to draw background, borders and the symbol) starts at the
+    // left edge of the item. On a split this applies to the split renderer, which is what gets drawn.
+    auto widen = [this](LayoutArea& a) {
+        a.getBBox().setX(a.getBBox().getX() - symbolAreaWidth_);
+        a.getBBox().setWidth(a.getBBox().getWidth() + symbolAreaWidth_);
+    };
     if (result.getStatus() == LayoutResult::FULL) {
-        occupiedArea_.getBBox().setX(occupiedArea_.getBBox().getX() - symbolAreaWidth_);
-        occupiedArea_.getBBox().setWidth(occupiedArea_.getBBox().getWidth() + symbolAreaWidth_);
+        widen(occupiedArea_);
         return LayoutResult(LayoutResult::FULL, occupiedArea_, nullptr, nullptr);
+    }
+    if (result.getStatus() == LayoutResult::PARTIAL) {
+        widen(occupiedArea_);
+        auto split = result.getSplitRenderer();
+        if (split && &split->getOccupiedArea() != &occupiedArea_) widen(split->getOccupiedArea());
+        return LayoutResult(LayoutResult::PARTIAL, occupiedArea_, split, result.getOverflowRenderer(),
+                            result.getCauseOfNothing());
     }
     return result;
 }
@@ -1254,10 +1304,13 @@ LayoutResult TableRenderer::layout(LayoutContext& layoutContext) {
         return {r->layout(ctx), r};
     };
     // Measures/lays out a row group of table `t` starting at row r. A row group extends while rowspans continue.
+    // Rows of the group are stacked: a cell starting at row rr is placed below the rows r..rr-1 and its box spans
+    // the heights of the rows it covers. A cell taller than the rows it spans grows the last of those rows.
+    // `contentPlaced` reports whether any real cell content was laid out (as opposed to nothing fitting at all).
     auto layoutRowGroup = [&](Table& t, int r, float top, float availableHeight, bool allowSplit,
                               std::map<std::pair<int, int>, std::shared_ptr<BlockRenderer>>& pending,
                               std::map<std::pair<int, int>, std::shared_ptr<BlockRenderer>>& nextPending, int& rowsInGroup,
-                              bool& splitHappened) -> std::optional<RowLayout> {
+                              bool& splitHappened, bool* contentPlaced = nullptr) -> std::optional<RowLayout> {
         int nRows = t.getNumberOfRows();
         int nCols = t.getNumberOfColumns();
         int groupEnd = r + 1;
@@ -1267,60 +1320,114 @@ LayoutResult TableRenderer::layout(LayoutContext& layoutContext) {
                 if (cell) groupEnd = std::max(groupEnd, std::min(nRows, rr + cell->getRowspan()));
             }
         rowsInGroup = groupEnd - r;
-        RowLayout row;
-        float groupHeight = 0;
-        std::vector<std::tuple<CellPtr, int, LayoutResult, std::shared_ptr<BlockRenderer>>> results;
+        struct CellResult {
+            CellPtr cell;
+            int row;
+            int col;
+            int span;
+            float height;
+            std::shared_ptr<BlockRenderer> renderer;
+            bool full;
+        };
+        std::vector<float> rowHeights(static_cast<size_t>(groupEnd - r), 0.f);
+        std::vector<CellResult> results;
         splitHappened = false;
+        bool anyContent = false;
+        float offset = 0;  // total height of the rows r..rr-1 (final once row rr starts)
         for (int rr = r; rr < groupEnd; ++rr) {
+            float rowTop = top - offset;
+            float rowAvailable = allowSplit ? availableHeight - offset : 1e6f;
             for (int c = 0; c < nCols; ++c) {
                 auto cell = t.getCell(rr, c);
                 if (!cell) continue;
                 int colspan = std::min(cell->getColspan(), nCols - c);
+                int span = std::min(cell->getRowspan(), groupEnd - rr);
                 float left = colX[c], width = colX[c + colspan] - colX[c];
                 auto it = pending.find({rr, c});
-                auto res = layoutCellAt(cell, left, width, top, allowSplit ? availableHeight : 1e6f,
-                                        it != pending.end() ? it->second : nullptr);
+                std::shared_ptr<BlockRenderer> existing = it != pending.end() ? it->second : nullptr;
+                // An empty continuation placeholder (see below) carries no content of its own.
+                bool placeholder = existing && existing->getChildRenderers().empty();
+                std::pair<LayoutResult, std::shared_ptr<BlockRenderer>> res =
+                    rowAvailable > 0 ? layoutCellAt(cell, left, width, rowTop, rowAvailable, existing)
+                                     : std::make_pair(LayoutResult(LayoutResult::NOTHING, area, nullptr, nullptr),
+                                                      existing ? existing
+                                                               : std::static_pointer_cast<BlockRenderer>(
+                                                                     cell->createRendererSubTree()));
                 const LayoutResult& lr = res.first;
+                float h = 0;
                 if (lr.getStatus() == LayoutResult::FULL) {
-                    groupHeight = std::max(groupHeight, lr.getOccupiedArea().getBBox().getHeight());
-                    results.emplace_back(cell, c, lr, res.second);
+                    h = lr.getOccupiedArea().getBBox().getHeight();
+                    results.push_back({cell, rr, c, span, h, res.second, true});
+                    if (!placeholder) anyContent = true;
                 } else if (lr.getStatus() == LayoutResult::PARTIAL) {
                     splitHappened = true;
-                    groupHeight = std::max(groupHeight, lr.getOccupiedArea().getBBox().getHeight());
-                    results.emplace_back(cell, c, lr, std::static_pointer_cast<BlockRenderer>(lr.getSplitRenderer()));
+                    anyContent = true;
+                    h = lr.getOccupiedArea().getBBox().getHeight();
+                    results.push_back(
+                        {cell, rr, c, span, h, std::static_pointer_cast<BlockRenderer>(lr.getSplitRenderer()), false});
                     nextPending[{rr, c}] = std::static_pointer_cast<BlockRenderer>(lr.getOverflowRenderer());
                 } else {
                     if (!allowSplit) return std::nullopt;
                     splitHappened = true;
-                    // nothing fits: the whole cell moves to the next part
+                    // nothing fits: the whole cell moves to the next part; keep an empty box here
                     nextPending[{rr, c}] = res.second;
-                    results.emplace_back(cell, c, LayoutResult(LayoutResult::FULL, LayoutArea(area.getPageNumber(), Rectangle(left, top, width, 0)), nullptr, nullptr),
-                                         nullptr);
+                    results.push_back({cell, rr, c, span, 0.f, nullptr, false});
                 }
+                if (span == 1) rowHeights[rr - r] = std::max(rowHeights[rr - r], h);
+            }
+            // cells spanning rows (rr - span + 1)..rr must fit into those rows: grow row rr if needed
+            for (const auto& cr : results) {
+                if (cr.span <= 1 || cr.row + cr.span - 1 != rr) continue;
+                float spanned = 0;
+                for (int k = cr.row; k <= rr; ++k) spanned += rowHeights[k - r];
+                if (cr.height > spanned) rowHeights[rr - r] += cr.height - spanned;
+            }
+            offset += rowHeights[rr - r];
+        }
+        float groupHeight = offset;
+        if (splitHappened && groupHeight < availableHeight) {
+            rowHeights.back() += availableHeight - groupHeight;
+            groupHeight = availableHeight;
+        }
+        if (auto mh = t.getProperty<UnitValue>(Property::MIN_HEIGHT)) {
+            if (groupHeight < mh->getValue()) {
+                rowHeights.back() += mh->getValue() - groupHeight;
+                groupHeight = mh->getValue();
             }
         }
-        if (splitHappened) groupHeight = std::max(groupHeight, availableHeight);
-        if (auto mh = t.getProperty<UnitValue>(Property::MIN_HEIGHT)) groupHeight = std::max(groupHeight, mh->getValue());
+        RowLayout row;
         row.height = groupHeight;
-        for (auto& tup : results) {
-            CellPtr cell = std::get<0>(tup);
-            int c = std::get<1>(tup);
-            auto renderer = std::get<3>(tup);
-            int colspan = std::min(cell->getColspan(), nCols - c);
-            Rectangle cellBox(colX[c], top - groupHeight, colX[c + colspan] - colX[c], groupHeight);
-            if (renderer) {
-                // stretch the cell to the row height and apply vertical alignment
-                Rectangle occ = renderer->getOccupiedArea().getBBox();
-                float free = groupHeight - occ.getHeight();
-                auto va = renderer->getProperty<VerticalAlignment>(Property::VERTICAL_ALIGNMENT);
-                if (va && *va != VerticalAlignment::TOP && free > 0) {
-                    float dy = *va == VerticalAlignment::MIDDLE ? free / 2 : free;
-                    for (auto& ch : renderer->getChildRenderers()) ch->move(0, -dy);
-                }
-                renderer->getOccupiedArea().setBBox(cellBox);
-                row.cells.push_back({renderer, cellBox});
+        for (auto& cr : results) {
+            int colspan = std::min(cr.cell->getColspan(), nCols - cr.col);
+            float cellTop = top, cellHeight = 0;
+            for (int k = r; k < cr.row; ++k) cellTop -= rowHeights[k - r];
+            for (int k = cr.row; k < cr.row + cr.span; ++k) cellHeight += rowHeights[k - r];
+            Rectangle cellBox(colX[cr.col], cellTop - cellHeight, colX[cr.col + colspan] - colX[cr.col], cellHeight);
+            auto& renderer = cr.renderer;
+            if (!renderer) {
+                // the cell's content moved to the next part entirely; still draw its (empty) box
+                renderer = std::static_pointer_cast<BlockRenderer>(cr.cell->getRenderer());
+                renderer->setParent(this);
+                renderer->getOccupiedArea() = LayoutArea(area.getPageNumber(), cellBox);
+            }
+            // stretch the cell to the row height and apply vertical alignment
+            Rectangle occ = renderer->getOccupiedArea().getBBox();
+            float free = cellHeight - occ.getHeight();
+            auto va = renderer->getProperty<VerticalAlignment>(Property::VERTICAL_ALIGNMENT);
+            if (va && *va != VerticalAlignment::TOP && free > 0) {
+                float dy = *va == VerticalAlignment::MIDDLE ? free / 2 : free;
+                for (auto& ch : renderer->getChildRenderers()) ch->move(0, -dy);
+            }
+            renderer->getOccupiedArea().setBBox(cellBox);
+            row.cells.push_back({renderer, cellBox});
+            // When the group is split, cells that were completed here continue as empty boxes in the next part
+            // (otherwise their content would be laid out - and drawn - a second time).
+            if (splitHappened && cr.full) {
+                auto continuation = std::static_pointer_cast<BlockRenderer>(cr.cell->getRenderer());
+                nextPending[{cr.row, cr.col}] = continuation;
             }
         }
+        if (contentPlaced) *contentPlaced = anyContent;
         return row;
     };
 
@@ -1392,15 +1499,22 @@ LayoutResult TableRenderer::layout(LayoutContext& layoutContext) {
             splitAtRow = true;
             break;
         }
-        if (!area.isEmptyArea() && !forced && avail < (row ? row->height : 1e6f) && avail < 0.5f * (bodyTop - bottomLimit + 1e6f)) {
-            // move the whole table to the next area if it is not empty
-            if (startRow_ == 0 && pending.empty()) return LayoutResult(LayoutResult::NOTHING, area, nullptr, shared_from_this(), shared_from_this());
-        }
-        // split cell contents of this row group
-        auto partRow = layoutRowGroup(t, r, y, avail, true, pending, nextPending, n, split);
-        if (!partRow || partRow->height <= 0) {
-            if (!area.isEmptyArea()) return LayoutResult(LayoutResult::NOTHING, area, nullptr, shared_from_this(), shared_from_this());
-            break;
+        // Split the cell contents of this (first) row group in place, as iText does. If no content fits at all,
+        // the table moves to the next area; on an empty area (e.g. header + footer taller than the page) it is
+        // laid out again with forced placement, which places the row group unsplit (overflowing) so that no rows
+        // are silently dropped.
+        bool contentPlaced = false;
+        auto partRow = avail > 0 ? layoutRowGroup(t, r, y, avail, true, pending, nextPending, n, split, &contentPlaced)
+                                 : std::nullopt;
+        if (!partRow || partRow->height <= 0 || !contentPlaced) {
+            if (!area.isEmptyArea() || !forced || !row)
+                return LayoutResult(LayoutResult::NOTHING, area, nullptr, shared_from_this(), shared_from_this());
+            placed_.insert(placed_.end(), row->cells.begin(), row->cells.end());
+            y -= row->height;
+            r += n;
+            anyRowPlaced = true;
+            pending.clear();
+            continue;
         }
         placed_.insert(placed_.end(), partRow->cells.begin(), partRow->cells.end());
         y -= partRow->height;
@@ -1414,7 +1528,7 @@ LayoutResult TableRenderer::layout(LayoutContext& layoutContext) {
         pending.clear();
     }
     // header & footer positions
-    for (auto& hc : headerCells) placed_.insert(placed_.begin(), hc);
+    placed_.insert(placed_.begin(), headerCells.begin(), headerCells.end());  // keep the header's column order
     if (!footerCells.empty() && !(t.isSkipLastFooter() && !splitAtRow)) {
         for (auto& fc : footerCells) {
             float dy = y;  // footer cells were laid out with top = 0

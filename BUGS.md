@@ -2,6 +2,37 @@
 
 Audit of `pdfcpp` (`include/pdfcpp/` and `src/`). Issues are grouped by module with severity, exact source location, trigger conditions, and observed impact.
 
+## Status
+
+All issues below have been resolved; line numbers in the entries refer to the code at the time of the audit.
+Regression tests live in `tests/io_test.cpp` and the matching module test files (look for `BUGS.md #N` comments).
+
+Resolutions that deliberately keep (or only partly change) Java behaviour:
+
+- **#7** — the missing encoding aliases were added. Unmapped Symbol/ZapfDingbats bytes still decode to U+0000,
+  exactly as Java's `SymbolConversion.byteToChar` does.
+- **#15** — the close loop already flushed the new object stream (by visiting its xref entry); `close()` now flushes
+  it explicitly instead of relying on iteration order.
+- **#16** — same single pass as Java and no objects were actually lost (flushing never sets `MODIFIED`); the pass is
+  now repeated until nothing new gets flushed.
+- **#17** — ported Java's `createType0FontFromTrueTypeFontProgram`: Type0 + TrueType is always embedded and
+  licensing restrictions / `FORCE_NOT_EMBEDDED` throw.
+- **#32** — like Java, `setValue("CustomOn")` on a checkbox whose only on-state is `Yes` checks nothing; use the
+  newly ported `setCheckBoxAppearanceOnStateName("CustomOn")` first. Existing artwork of read checkboxes is kept on
+  value changes and redrawn only after appearance setters.
+- **#34** — the first row group that does not fit is now split in place (as iText does) instead of moving the whole
+  table; it moves only when no cell content fits at all.
+
+Found and fixed while working on these:
+
+- `TableRenderer`: cells that were complete before a row split were laid out and drawn again on the next page
+  (they now continue as empty boxes).
+- `ParagraphRenderer`: split/overflow parts shared child text renderers whose parent pointer still referred to the
+  original renderer, a heap use-after-free when a paragraph split inside a table cell (found with ASan).
+- `BlockRenderer`: same problem as #36 for `HEIGHT` on the overflow part (`deleteOwnProperty` left the model's value
+  in effect); the overflow now gets the remaining height.
+- `SignatureUtil::verifySignature`: a missing `/ByteRange` was dereferenced.
+
 ## Summary
 
 | Severity | Count | Highlights |

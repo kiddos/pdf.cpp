@@ -84,9 +84,9 @@ Image::Image(std::shared_ptr<io::ImageData> img, float left, float bottom) : Ima
 }
 
 Image& Image::scaleToFit(float fitWidth, float fitHeight) {
-    float horizontalScaling = fitWidth / xObject_->getWidth();
-    float verticalScaling = fitHeight / xObject_->getHeight();
-    float s = std::min(horizontalScaling, verticalScaling);
+    float w = xObject_->getWidth(), h = xObject_->getHeight();
+    if (w == 0 && h == 0) return *this;  // nothing to scale (avoids NaN/Inf scaling)
+    float s = w == 0 ? fitHeight / h : h == 0 ? fitWidth / w : std::min(fitWidth / w, fitHeight / h);
     return scale(s, s);
 }
 

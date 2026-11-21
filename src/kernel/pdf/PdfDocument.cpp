@@ -655,11 +655,19 @@ namespace {
 class PageCopyFilter : public ICopyFilter {
 public:
     explicit PageCopyFilter(const PdfObject*) {}
-    bool shouldProcess(PdfObject* newParent, PdfName* name, PdfObject*) override {
+    bool shouldProcess(PdfObject* newParent, PdfName* name, PdfObject* value) override {
         if (name && name->getValue() == "Parent") return false;
-        // /P back-pointer of annotations to their original page
-        if (name && name->getValue() == "P" && newParent && newParent->isDictionary()) return false;
+        // /P back-pointers (annotations, popups, structure elements) to a page of the source document: copying them
+        // would drag the source page tree along. Other /P entries (e.g. a JavaScript /P string) are kept.
+        if (name && name->getValue() == "P" && newParent && newParent->isDictionary() && isPage(value)) return false;
         return true;
+    }
+
+private:
+    static bool isPage(PdfObject* value) {
+        if (value && value->isIndirectReference()) value = static_cast<PdfIndirectReference*>(value)->getRefersTo(true);
+        if (!value || !value->isDictionary()) return false;
+        return nameEquals(static_cast<PdfDictionary*>(value)->getAsName(PdfName::Type), PdfName::Page);
     }
 };
 }  // namespace
@@ -690,18 +698,25 @@ std::shared_ptr<PdfPage> PdfPage::copyTo(PdfDocument* toDocument) {
             auto a = annots->getAsDictionary(i);
             if (!a) continue;
             auto subtype = a->getAsName(PdfName::Subtype);
-            if (nameEquals(subtype, PdfName::Popup)) continue;
             if (nameEquals(subtype, PdfName::Link)) {
                 // internal links point to pages of the source document: drop them (as iText does when the
                 // target page is not copied)
                 auto action = a->getAsDictionary(PdfName::A);
                 if (a->containsKey(PdfName::Dest) || (action && nameEquals(action->getAsName(PdfName::S), PdfName::GoTo))) continue;
             }
+            // Popups are copied too: copyTo de-duplicates indirect objects, so the markup's /Popup and the popup's
+            // entry in /Annots end up as the same copied object (no orphaned popup).
             auto copy = pdf_cast<PdfDictionary>(a->copyTo(toDocument, false, filter));
             if (copy) {
                 copy->put(PdfName::P, dict);
                 newAnnots->add(copy);
             }
+        }
+        // The filter drops every /Parent; restore the popup -> markup link.
+        for (int i = 0; i < newAnnots->size(); ++i) {
+            auto markup = newAnnots->getAsDictionary(i);
+            auto popup = markup ? markup->getAsDictionary(PdfName::Popup) : nullptr;
+            if (popup) popup->put(PdfName::Parent, markup);
         }
         if (!newAnnots->isEmpty()) dict->put(PdfName::Annots, newAnnots);
     }
@@ -898,6 +913,8 @@ PdfPage* PdfDocument::addPage(std::shared_ptr<PdfPage> page) {
 PdfPage* PdfDocument::addPage(int index, std::shared_ptr<PdfPage> page) {
     checkClosingStatus();
     if (page->isFlushed()) throw PdfException(KernelExceptionMessageConstant::FLUSHED_PAGE_CANNOT_BE_ADDED_OR_INSERTED);
+    if (page->getDocument() != nullptr && page->getDocument() != this)
+        throw PdfException("Page cannot be added to document because it belongs to another document.");
     PdfPage* raw = page.get();
     catalog_->getPageTree().addPage(index, std::move(page));
     return raw;
@@ -1057,6 +1074,10 @@ void PdfDocument::close() {
                             ref->setFree();
                     }
                 }
+                // Under full compression the objects flushed above go into a fresh object stream; make sure it is
+                // written before the xref (it is only flushed by the loop above if its own entry happens to be
+                // visited after the last object was added).
+                writer_->flushWaitingObjects(forbiddenToFlush);
             }
             writer_->setCrypto(nullptr);
             if (!properties_.appendMode && crypto) crypto->flush(false);

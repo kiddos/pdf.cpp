@@ -222,6 +222,14 @@ int PdfEncodings::macRomanToUnicode(int b) {
     return b < 128 ? b : MAC_ROMAN[b - 128];
 }
 
+namespace {
+// Accept the same spellings as byteToUnicode (Java only matches the exact "Cp1252" / "PDF" constants).
+bool isWinAnsiAlias(const std::string& lower) {
+    return lower == "cp1252" || lower == "winansi" || lower == "winansiencoding";
+}
+bool isPdfDocAlias(const std::string& lower) { return lower == "pdf" || lower == "pdfdocencoding"; }
+}  // namespace
+
 int PdfEncodings::byteToUnicode(int b, const std::string& encoding) {
     std::string e = toLower(encoding);
     if (e.empty()) return b & 0xff;
@@ -262,8 +270,8 @@ Bytes PdfEncodings::convertToBytes(const std::string& text, const std::string& e
         return b;
     }
     const std::unordered_map<uint32_t, int>* hash = nullptr;
-    if (encoding == WINANSI) hash = &t.winansi;
-    else if (encoding == PDF_DOC_ENCODING) hash = &t.pdfdoc;
+    if (isWinAnsiAlias(lower)) hash = &t.winansi;
+    else if (isPdfDocAlias(lower)) hash = &t.pdfdoc;
     if (hash) {
         Bytes b;
         for (uint32_t ch : TextUtil::utf8ToCodePoints(text)) {
@@ -297,7 +305,7 @@ Bytes PdfEncodings::convertToBytes(const std::string& text, const std::string& e
         }
         return b;
     }
-    if (lower == "macroman") {
+    if (lower == "macroman" || lower == "macromanencoding") {
         Bytes b;
         for (uint32_t cp : TextUtil::utf8ToCodePoints(text)) {
             if (cp < 128) {
@@ -330,9 +338,10 @@ std::string PdfEncodings::convertToString(const Bytes& bytes, const std::string&
     const uint16_t* table = nullptr;
     if (lower == "symbol") table = SYMBOL_TABLE;
     else if (lower == "zapfdingbats") table = ZAPF_TABLE;
-    else if (encoding == WINANSI) table = WINANSI_BYTE_TO_CHAR;
-    else if (encoding == PDF_DOC_ENCODING) table = PDFDOC_BYTE_TO_CHAR;
+    else if (isWinAnsiAlias(lower)) table = WINANSI_BYTE_TO_CHAR;
+    else if (isPdfDocAlias(lower)) table = PDFDOC_BYTE_TO_CHAR;
     if (table) {
+        // Unmapped Symbol/ZapfDingbats bytes become U+0000, exactly as in Java's SymbolConversion.byteToChar.
         std::string s;
         for (uint8_t b : bytes) TextUtil::appendUtf8(s, table[b]);
         return s;
@@ -348,7 +357,7 @@ std::string PdfEncodings::convertToString(const Bytes& bytes, const std::string&
         for (size_t i = start; i + 1 < bytes.size(); i += 2) u += static_cast<char16_t>((bytes[i] << 8) | bytes[i + 1]);
         return TextUtil::utf16ToUtf8(u);
     }
-    if (lower == "macroman") {
+    if (lower == "macroman" || lower == "macromanencoding") {
         std::string s;
         for (uint8_t b : bytes) TextUtil::appendUtf8(s, macRomanToUnicode(b));
         return s;

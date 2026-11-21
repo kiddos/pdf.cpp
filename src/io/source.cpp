@@ -228,12 +228,12 @@ WindowRandomAccessSource::WindowRandomAccessSource(RandomAccessSourcePtr source,
 }
 
 int WindowRandomAccessSource::get(int64_t position) {
-    if (position >= length_) return -1;
+    if (position < 0 || position >= length_) return -1;
     return source_->get(offset_ + position);
 }
 
 int WindowRandomAccessSource::get(int64_t position, uint8_t* bytes, int off, int len) {
-    if (position >= length_) return -1;
+    if (position < 0 || position >= length_) return -1;
     int64_t toRead = std::min<int64_t>(len, length_ - position);
     return source_->get(offset_ + position, bytes, off, static_cast<int>(toRead));
 }
@@ -249,6 +249,7 @@ GroupedRandomAccessSource::GroupedRandomAccessSource(std::vector<RandomAccessSou
 }
 
 int GroupedRandomAccessSource::findIndex(int64_t position) const {
+    if (position < 0) return -1;
     for (size_t i = 0; i < sources_.size(); ++i)
         if (position <= sources_[i].lastByte) return static_cast<int>(i);
     return -1;

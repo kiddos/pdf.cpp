@@ -205,10 +205,39 @@ std::shared_ptr<PdfOutline> PdfOutline::addOutline(const std::string& title, int
 
 void PdfOutline::removeOutline() {
     if (!parent_) return;
-    auto& siblings = parent_->children_;
-    siblings.erase(std::remove_if(siblings.begin(), siblings.end(), [this](const std::shared_ptr<PdfOutline>& o) { return o.get() == this; }),
-                   siblings.end());
-    parent_->rebuildLinks();
+    // The parent's children_ may hold the only owning reference to this outline: keep it alive (and work through
+    // a local parent pointer) until we are done touching members.
+    PdfOutline* parent = parent_;
+    std::shared_ptr<PdfOutline> self;
+    auto& siblings = parent->children_;
+    for (auto it = siblings.begin(); it != siblings.end();) {
+        if (it->get() == this) {
+            if (!self) self = *it;
+            it = siblings.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    parent_ = nullptr;
+    content_->remove(PdfName::Parent);
+    content_->remove(PdfName::Prev);
+    content_->remove(PdfName::Next);
+    parent->rebuildLinks();
+}
+
+void PdfOutline::setOpen(bool open) {
+    if (open_ == open) return;
+    open_ = open;
+    if (!children_.empty()) rebuildLinks();  // ancestors' visible counts depend on this item's state
+}
+
+int PdfOutline::visibleDescendants() const {
+    int n = 0;
+    for (const auto& c : children_) {
+        ++n;
+        if (c->open_) n += c->visibleDescendants();
+    }
+    return n;
 }
 
 void PdfOutline::rebuildLinks() {
@@ -219,7 +248,8 @@ void PdfOutline::rebuildLinks() {
     } else {
         content_->put(PdfName::First, children_.front()->content_);
         content_->put(PdfName::Last, children_.back()->content_);
-        int count = static_cast<int>(children_.size());
+        // Root: total visible items; item: +visible descendants when open, minus that number when closed.
+        int count = visibleDescendants();
         content_->put(PdfName::Count, makeNumber(parent_ == nullptr || open_ ? count : -count));
         for (size_t i = 0; i < children_.size(); ++i) {
             auto& c = children_[i]->content_;
@@ -262,6 +292,7 @@ Bytes PdfSplitter::extractPageRange(int fromPage, int toPage) {
 std::vector<Bytes> PdfSplitter::splitByPageCount(int pageCount) {
     std::vector<Bytes> parts;
     int n = pdfDocument_.getNumberOfPages();
+    if (pageCount <= 0) throw PdfException("Page count must be positive.");
     for (int start = 1; start <= n; start += pageCount) parts.push_back(extractPageRange(start, std::min(n, start + pageCount - 1)));
     return parts;
 }

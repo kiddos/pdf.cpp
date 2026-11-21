@@ -95,13 +95,16 @@ void RootRenderer::addFixedChild(IRendererPtr renderer) {
     float left = ar->getPropertyAsFloat(Property::LEFT).value_or(0);
     float bottom = ar->getPropertyAsFloat(Property::BOTTOM).value_or(0);
     float width = 1e5f;
-    if (auto w = ar->getPropertyAsUnitValue(Property::WIDTH)) width = w->resolve(currentArea_.getBBox().getWidth());
+    auto declaredWidth = ar->getPropertyAsUnitValue(Property::WIDTH);
+    if (declaredWidth) width = declaredWidth->resolve(currentArea_.getBBox().getWidth());
     int page = ar->getPropertyAsInteger(Property::PAGE_NUMBER).value_or(currentArea_.getPageNumber());
     // the element's own width property already constrains it; give generous room
     LayoutArea area(page, Rectangle(left, bottom, std::max(width, 1.f) + 1e4f, 1e5f));
     area.getBBox().setWidth(width < 1e5f ? width : 1e5f);
-    // layout ignoring the WIDTH property (already applied through the area)
-    ar->deleteOwnProperty(Property::WIDTH);
+    // The WIDTH is already applied through the area. Deleting the renderer's own property is not enough (the model
+    // element - where setFixedPosition stores it - would still be consulted and e.g. 50% applied a second time), so
+    // shadow it with "the whole area".
+    if (declaredWidth) ar->setPropertyAny(Property::WIDTH, UnitValue::createPercentValue(100));
     LayoutContext ctx(area);
     renderer->setPropertyAny(Property::FORCED_PLACEMENT, true);
     LayoutResult result = renderer->layout(ctx);

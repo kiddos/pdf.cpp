@@ -130,8 +130,12 @@ float TextRenderInfo::getUnscaledWidth() const {
 LineSegment TextRenderInfo::getUnscaledBaselineWithOffset(float yOffset) const {
     std::string unicodeStr = getText();
     bool endsWithSpace = !unicodeStr.empty() && unicodeStr.back() == ' ';
-    float corrected = getUnscaledWidth() - (gs_.getCharSpacing() + (endsWithSpace ? gs_.getWordSpacing() : 0)) *
-                                               (gs_.getHorizontalScaling() / 100.f);
+    // The width includes the trailing char (and word) spacing of the last glyph, which is removed here. An empty
+    // string has no glyphs and hence no spacing to remove (Java would yield a negative width).
+    float corrected = string_->getValueBytes().empty()
+                          ? 0.f
+                          : getUnscaledWidth() - (gs_.getCharSpacing() + (endsWithSpace ? gs_.getWordSpacing() : 0)) *
+                                                     (gs_.getHorizontalScaling() / 100.f);
     return LineSegment(Vector(0, yOffset, 1), Vector(corrected, yOffset, 1));
 }
 
@@ -724,14 +728,15 @@ void PdfCanvasProcessor::displayXObject(const PdfNamePtr& resourceName) {
         displayImage(markedContentStack_, xobjectStream, resourceName, false);
     } else if (nameEquals(subtype, PdfName::Form)) {
         if (xobjectDepth_ > 32) return;  // guard against recursive forms
-        ++xobjectDepth_;
         PdfResources* resources = getResources();
         auto resDict = xobjectStream->getAsDictionary(PdfName::Resources);
         if (resDict) {
             ownedResources_.push_back(std::make_shared<PdfResources>(resDict));
             resources = ownedResources_.back().get();
         }
+        // Decode before bumping the depth: a throwing filter must not leave xobjectDepth_ incremented.
         Bytes contentBytes = xobjectStream->getBytes();
+        ++xobjectDepth_;
         auto matrix = xobjectStream->getAsArray(PdfName::Matrix);
         gsStack_.push_back(gsStack_.back());
         if (matrix && matrix->size() == 6) {
