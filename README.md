@@ -10,8 +10,13 @@ modules:
 | `com.itextpdf.kernel.*`          | `pdfcpp::kernel` — `include/pdfcpp/kernel/...`            |
 | `com.itextpdf.layout.*`          | `pdfcpp::layout` — `include/pdfcpp/layout/...`            |
 
-Class and method names follow the Java API (`PdfDocument`, `PdfReader`, `PdfWriter`, `PdfCanvas`,
-`PdfFontFactory::createFont`, `PdfTextExtractor::getTextFromPage`, `Document`, `Paragraph`, `Table`, ...).
+Classes mirror the Java API (`PdfDocument`, `PdfReader`, `PdfWriter`, `PdfCanvas`, `Document`, `Paragraph`,
+`Table`, ...), with names spelled per the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html):
+methods are PascalCase (`createFont` → `PdfFontFactory::CreateFont`, `getTextFromPage` →
+`PdfTextExtractor::GetTextFromPage`), constants and enumerators are `kPascalCase`
+(`ColorConstants.RED` → `color_constants::kRed`, `PdfName.Type` → `PdfName::kType`), variables and
+parameters are snake_case and class data members end in `_`. Files are snake_case (`pdf_reader.h`,
+`pdf_reader.cc`).
 
 ## Building
 
@@ -34,17 +39,17 @@ point elsewhere.
 ## Example
 
 ```cpp
-#include "pdfcpp/kernel/pdf/PdfWriter.h"
-#include "pdfcpp/layout/Document.h"
+#include "pdfcpp/kernel/pdf/pdf_writer.h"
+#include "pdfcpp/layout/document.h"
 
 using namespace pdfcpp;
 using namespace pdfcpp::layout;
 
 int main() {
-    kernel::PdfDocument pdf(std::make_unique<kernel::PdfWriter>("hello.pdf"));
-    Document document(pdf);
-    document.add(make<Paragraph>("Hello World!")->setFontSize(20));
-    document.close();
+  kernel::PdfDocument pdf(std::make_unique<kernel::PdfWriter>("hello.pdf"));
+  Document document(pdf);
+  document.Add(Make<Paragraph>("Hello World!")->SetFontSize(20));
+  document.Close();
 }
 ```
 
@@ -57,10 +62,11 @@ flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page fo
 ### Differences from the Java API
 
 * Objects are reference counted: PDF objects are `std::shared_ptr<PdfObject>` (`PdfDictionaryPtr`,
-  `PdfArrayPtr`, ...); predefined names are `PdfName::Type`, `PdfName::Page`, ... (all 879 generated from
-  `PdfName.java`). Layout elements are created with `layout::make<T>(...)` (i.e. `std::make_shared`), and
-  fluent setters return references, so Java's `doc.add(new Paragraph("x").setBold())` becomes
-  `doc.add(make<Paragraph>("x")->setBold())`.
+  `PdfArrayPtr`, ...); predefined names are `PdfName::kType`, `PdfName::kPage`, ... (all 879 generated from
+  `PdfName.java`; `PdfName.a`/`PdfName.r` become `kLowerA`/`kLowerR`). Downcast with `PdfCast<T>(obj)`.
+  Layout elements are created with `layout::Make<T>(...)` (i.e. `std::make_shared`), and fluent setters
+  return references, so Java's `doc.add(new Paragraph("x").setBold())` becomes
+  `doc.Add(Make<Paragraph>("x")->SetBold())`.
 * Java `String` is UTF-8 `std::string`; `byte[]` is `pdfcpp::Bytes` (`std::vector<uint8_t>`).
 * Nullable return values are `nullptr` / `std::optional`.
 * `PdfDocument` can own its reader/writer (`PdfDocument(std::make_unique<PdfWriter>("out.pdf"))`) or
@@ -82,13 +88,13 @@ flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page fo
 * The whole object model (`PdfObject`, `PdfName`, `PdfString`, `PdfNumber`, `PdfArray`, `PdfDictionary`,
   `PdfStream`, `PdfIndirectReference`, ...), copying between documents, smart mode.
 * `PdfReader`: classic and cross-reference-stream xrefs, hybrid files, object streams, incremental
-  updates, broken-xref repair (`fixXref` / `rebuildXref`), stream length recovery, memory-limit guards.
+  updates, broken-xref repair (`FixXref` / `RebuildXref`), stream length recovery, memory-limit guards.
 * `PdfWriter`: full compression (object + xref streams), compression levels, append mode
-  (`StampingProperties::useAppendMode`), document IDs.
+  (`StampingProperties::UseAppendMode`), document IDs.
 * Filters: Flate (+ PNG/TIFF predictors), LZW, ASCIIHex, ASCII85, RunLength.
 * Standard security handler: RC4-40, RC4-128, AES-128, AES-256 (R6) — reading and writing, user/owner
   passwords, permissions.
-* `PdfDocument`, `PdfPage`, page tree, `PdfResources`, `PdfDocumentInfo`, `copyPagesTo`.
+* `PdfDocument`, `PdfPage`, page tree, `PdfResources`, `PdfDocumentInfo`, `CopyPagesTo`.
 * `PdfCanvas`: paths, text, colors (Gray/RGB/CMYK/any color space), ExtGState, XObjects, images,
   marked content; `PdfFormXObject`, `PdfImageXObject`, `PdfExtGState`.
 * Fonts: `PdfFontFactory` → simple Type1/TrueType fonts (WinAnsi or custom encodings, embedding,
@@ -97,7 +103,7 @@ flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page fo
 * Content parsing: `PdfCanvasProcessor`, `TextRenderInfo`, `ImageRenderInfo`, `PathRenderInfo`, inline
   images, `SimpleTextExtractionStrategy`, `LocationTextExtractionStrategy` (with diacritic marks
   handling), `PdfTextExtractor`. The Java `PdfTextExtractorTest` / `SimpleFontToUnicodeExtractionTest`
-  expectations are reproduced in `tests/kernel_parser_test.cpp`.
+  expectations are reproduced in `tests/kernel_parser_test.cc`.
 * Navigation: `PdfOutline`, `PdfDestination`, `PdfAction`, `PdfAnnotation` (link, text, square,
   free text, highlight), `PdfMerger`, `PdfSplitter`.
 * Text editing (pdfcpp extension, no iText kernel equivalent): `PdfTextEditor` finds and replaces text in
@@ -113,19 +119,19 @@ flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page fo
 
 **forms**
 * `PdfAcroForm` (get/create, field lookup by qualified name, add/remove/rename, default resources and
-  appearance, `flattenFields`/`partialFormFlattening`), `PdfFormField` (values, flags, fonts/sizes/colors,
+  appearance, `FlattenFields`/`PartialFormFlattening`), `PdfFormField` (values, flags, fonts/sizes/colors,
   justification, borders/backgrounds, appearance regeneration for text, multiline, password, choice and
   checkbox fields), `TextFormFieldBuilder`, `CheckBoxFormFieldBuilder`, `ChoiceFormFieldBuilder`.
 
 **signatures** (OpenSSL)
-* `PdfSigner::signDetached` — incremental-update signing with `adbe.pkcs7.detached` CMS signatures
+* `PdfSigner::SignDetached` — incremental-update signing with `adbe.pkcs7.detached` CMS signatures
   (SHA-1/256/384/512), visible or invisible signature fields; `PrivateKey`/`Certificate` loading from
   PEM or PKCS#12 and self-signed test certificates.
 * `SignatureUtil` — signature discovery, `/ByteRange` coverage check and CMS integrity verification.
   Results agree with poppler's `pdfsig` on the Java test-suite's signed PDFs.
 
 **layout**
-* `Document`, `Canvas`, `showTextAligned`.
+* `Document`, `Canvas`, `ShowTextAligned`.
 * Elements: `Paragraph`, `Text`, `Link`, `Div`, `Image`, `List`/`ListItem` (bullets, decimal, roman,
   latin, greek), `Table`/`Cell` (point/percent widths, colspan, rowspan, header/footer rows repeated on
   every page, cell content split across pages), `AreaBreak`, `LineSeparator`.
@@ -133,8 +139,8 @@ flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page fo
   spacing, text rise, alignment (left/right/center/justified), leading (fixed/multiplied), first-line
   indent, margins, paddings, borders (solid, dashed, dotted, double), backgrounds, widths/heights,
   keep-together, fixed positioning, rotation, opacity.
-* Renderers follow iText's model (`layout()` → `LayoutResult` FULL/PARTIAL/NOTHING with split/overflow
-  renderers, `draw(DrawContext)`).
+* Renderers follow iText's model (`Layout()` → `LayoutResult` `kFull`/`kPartial`/`kNothing` with
+  split/overflow renderers, `Draw(DrawContext)`).
 
 ## Not (yet) ported
 

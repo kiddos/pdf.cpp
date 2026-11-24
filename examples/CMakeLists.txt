@@ -1,4 +1,4 @@
-file(GLOB PDFCPP_EXAMPLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+file(GLOB PDFCPP_EXAMPLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
 foreach(src ${PDFCPP_EXAMPLE_SOURCES})
   get_filename_component(name ${src} NAME_WE)
   add_executable(${name} ${src})

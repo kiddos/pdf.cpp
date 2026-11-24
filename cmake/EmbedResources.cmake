@@ -1,5 +1,5 @@
 # Generates a C++ source embedding every file under RESOURCE_DIR as a byte array.
-# Usage: cmake -DRESOURCE_DIR=<dir> -DOUTPUT=<file.cpp> -P EmbedResources.cmake
+# Usage: cmake -DRESOURCE_DIR=<dir> -DOUTPUT=<file.cc> -P EmbedResources.cmake
 file(GLOB_RECURSE files RELATIVE ${RESOURCE_DIR} ${RESOURCE_DIR}/*)
 list(SORT files)
 
@@ -16,14 +16,14 @@ foreach(f ${files})
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," arr "${hex}")
   # wrap long lines
   string(REGEX REPLACE "((0x..,){32})" "\\1\n" arr "${arr}")
-  string(APPEND body "static const uint8_t res_${index}[] = {\n${arr}0x00};\n")
-  string(APPEND table "        {\"${f}\", {res_${index}, ${size}}},\n")
+  string(APPEND body "static const uint8_t kRes${index}[] = {\n${arr}0x00};\n")
+  string(APPEND table "      {\"${f}\", {kRes${index}, ${size}}},\n")
   math(EXPR index "${index} + 1")
 endforeach()
 
-string(APPEND body "\nconst std::map<std::string, std::pair<const uint8_t*, size_t>>& embeddedResources() {\n")
-string(APPEND body "    static const std::map<std::string, std::pair<const uint8_t*, size_t>> resources = {\n${table}    };\n")
-string(APPEND body "    return resources;\n}\n\n}  // namespace detail\n}  // namespace io\n}  // namespace pdfcpp\n")
+string(APPEND body "\nconst std::map<std::string, std::pair<const uint8_t*, size_t>>& EmbeddedResources() {\n")
+string(APPEND body "  static const std::map<std::string, std::pair<const uint8_t*, size_t>> kResources = {\n${table}  };\n")
+string(APPEND body "  return kResources;\n}\n\n}  // namespace detail\n}  // namespace io\n}  // namespace pdfcpp\n")
 
 get_filename_component(outdir ${OUTPUT} DIRECTORY)
 file(MAKE_DIRECTORY ${outdir})

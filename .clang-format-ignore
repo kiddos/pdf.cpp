@@ -1,0 +1,6 @@
+# Generated files: regenerate with tools/ instead of reformatting.
+include/pdfcpp/kernel/pdf/pdf_name_constants.inc
+src/kernel/pdf/pdf_name_constants.cc
+src/**/*.inc
+reference/**
+build/**

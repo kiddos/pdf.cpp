@@ -25,7 +25,7 @@ set(PDFCPP_RESOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 file(GLOB PDFCPP_RESOURCE_FILES
   ${PDFCPP_RESOURCE_DIR}/font/afm/*.afm
   ${PDFCPP_RESOURCE_DIR}/font/AdobeGlyphList.txt)
-set(PDFCPP_EMBEDDED_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/EmbeddedResources.cpp)
+set(PDFCPP_EMBEDDED_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_resources.cc)
 add_custom_command(
   OUTPUT ${PDFCPP_EMBEDDED_CPP}
   COMMAND ${CMAKE_COMMAND}
@@ -39,7 +39,7 @@ add_custom_command(
 # Library
 # ----------------------------------------------------------------------------
 file(GLOB_RECURSE PDFCPP_SOURCES CONFIGURE_DEPENDS
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc)
 
 add_library(pdfcpp ${PDFCPP_SOURCES} ${PDFCPP_EMBEDDED_CPP})
 add_library(pdfcpp::pdfcpp ALIAS pdfcpp)
