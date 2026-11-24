@@ -654,6 +654,18 @@ void ImageRenderer::CalculateImageSize(float available_width,
   image_height_ = height;
 }
 
+float ImageRenderer::RotatedWidth() const {
+  float angle = GetPropertyAsFloat(property::kRotationAngle).value_or(0);
+  return std::fabs(image_width_ * std::cos(angle)) +
+         std::fabs(image_height_ * std::sin(angle));
+}
+
+float ImageRenderer::RotatedHeight() const {
+  float angle = GetPropertyAsFloat(property::kRotationAngle).value_or(0);
+  return std::fabs(image_width_ * std::sin(angle)) +
+         std::fabs(image_height_ * std::cos(angle));
+}
+
 LayoutResult ImageRenderer::Layout(LayoutContext& layout_context) {
   LayoutArea& area = layout_context.GetArea();
   Rectangle box = area.GetBBox();
@@ -662,7 +674,8 @@ LayoutResult ImageRenderer::Layout(LayoutContext& layout_context) {
   ApplyPaddings(box, false);
   CalculateImageSize(box.GetWidth(), box.GetHeight());
   bool forced = IsForced(*this);
-  float w = image_width_, h = image_height_;
+  // A rotated image occupies the bounding box of the rotated rectangle.
+  float w = RotatedWidth(), h = RotatedHeight();
   if ((w > box.GetWidth() + kEps || h > box.GetHeight() + kEps) &&
       !IsFixedLayout()) {
     if (forced || area.IsEmptyArea()) {
@@ -677,13 +690,15 @@ LayoutResult ImageRenderer::Layout(LayoutContext& layout_context) {
                           shared_from_this(), shared_from_this());
     }
   }
+  w = RotatedWidth();
+  h = RotatedHeight();
   float x = box.GetX();
   auto ha = GetProperty<HorizontalAlignment>(property::kHorizontalAlignment);
   if (ha && *ha == HorizontalAlignment::kCenter)
-    x += (box.GetWidth() - image_width_) / 2;
+    x += (box.GetWidth() - w) / 2;
   else if (ha && *ha == HorizontalAlignment::kRight)
-    x += box.GetWidth() - image_width_;
-  Rectangle used(x, box.GetTop() - image_height_, image_width_, image_height_);
+    x += box.GetWidth() - w;
+  Rectangle used(x, box.GetTop() - h, w, h);
   ApplyPaddings(used, true);
   ApplyBorderBox(used, true);
   ApplyMargins(used, true);
@@ -706,23 +721,26 @@ void ImageRenderer::Draw(DrawContext& draw_context) {
     gs.SetFillOpacity(*opacity);
     canvas.SetExtGState(gs);
   }
+  // The image is centred in its (rotated) bounding box and rotated about
+  // its centre.
+  double cx = inner.GetX() + RotatedWidth() / 2,
+         cy = inner.GetY() + RotatedHeight() / 2;
+  float left = static_cast<float>(cx - image_width_ / 2),
+        bottom = static_cast<float>(cy - image_height_ / 2);
   if (rotation && *rotation != 0) {
-    double cx = inner.GetX() + image_width_ / 2,
-           cy = inner.GetY() + image_height_ / 2;
     canvas.ConcatMatrix(
         kernel::AffineTransform::GetRotateInstance(*rotation, cx, cy));
   }
   if (x_object.IsImage()) {
     canvas.AddXObjectWithTransformationMatrix(x_object, image_width_, 0, 0,
-                                              image_height_, inner.GetX(),
-                                              inner.GetY());
+                                              image_height_, left, bottom);
   } else {
     float sx =
         x_object.GetWidth() != 0 ? image_width_ / x_object.GetWidth() : 1;
     float sy =
         x_object.GetHeight() != 0 ? image_height_ / x_object.GetHeight() : 1;
-    canvas.AddXObjectWithTransformationMatrix(x_object, sx, 0, 0, sy,
-                                              inner.GetX(), inner.GetY());
+    canvas.AddXObjectWithTransformationMatrix(x_object, sx, 0, 0, sy, left,
+                                              bottom);
   }
   canvas.RestoreState();
 }
@@ -1269,21 +1287,52 @@ static std::string ToRoman(int n) {
   return s;
 }
 
-static std::string ToLatin(int n) {
-  std::string s;
+// Port of AlphabetNumbering.toAlphabetNumber: bijective numbering over
+// `alphabet` (1 -> a, 26 -> z, 27 -> aa, ...), as UTF-8.
+static std::string ToAlphabetNumber(int n,
+                                    const std::vector<char32_t>& alphabet) {
+  const int cardinality = static_cast<int>(alphabet.size());
+  std::vector<char32_t> digits;
   while (n > 0) {
     --n;
-    s.insert(s.begin(), static_cast<char>('a' + n % 26));
-    n /= 26;
+    digits.push_back(alphabet[n % cardinality]);
+    n /= cardinality;
   }
+  std::string s;
+  for (auto it = digits.rbegin(); it != digits.rend(); ++it)
+    io::TextUtil::AppendUtf8(s, *it);
   return s;
 }
 
-std::string ListRenderer::MakeSymbol(int index) const {
-  const std::any* raw = GetPropertyAny(property::kListSymbol);
-  std::optional<ListNumberingType> type;
-  if (raw)
-    if (auto* t = std::any_cast<ListNumberingType>(raw)) type = *t;
+static std::string ToLatin(int n) {
+  static const std::vector<char32_t> kLatin = [] {
+    std::vector<char32_t> a;
+    for (char32_t c = 'a'; c <= 'z'; ++c) a.push_back(c);
+    return a;
+  }();
+  return ToAlphabetNumber(n, kLatin);
+}
+
+// Port of GreekAlphabetNumbering: the 24 letters, skipping final sigma.
+static std::vector<char32_t> GreekAlphabet(char32_t first) {
+  std::vector<char32_t> alphabet;
+  for (int i = 0; i < 24; ++i) alphabet.push_back(first + i + (i > 16 ? 1 : 0));
+  return alphabet;
+}
+
+static std::string ToGreek(int n, bool upper_case) {
+  static const std::vector<char32_t> kLower = GreekAlphabet(0x3B1),
+                                     kUpper = GreekAlphabet(0x391);
+  return ToAlphabetNumber(n, upper_case ? kUpper : kLower);
+}
+
+std::string ListRenderer::MakeSymbol(
+    int index, std::optional<ListNumberingType> type) const {
+  if (!type) {
+    const std::any* raw = GetPropertyAny(property::kListSymbol);
+    if (raw)
+      if (auto* t = std::any_cast<ListNumberingType>(raw)) type = *t;
+  }
   std::string pre =
       GetProperty<std::string>(property::kListSymbolPreText).value_or("");
   std::string post =
@@ -1318,17 +1367,38 @@ std::string ListRenderer::MakeSymbol(int index) const {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
       break;
     }
+    // Greek letters and dingbats are drawn in the Symbol / ZapfDingbats
+    // fonts (see SymbolFont()), like Java's ConstantFontTextRenderer.
     case ListNumberingType::kGreekLower:
-      io::TextUtil::AppendUtf8(num, 0x3B1 + cyclic(24));
+      num = ToGreek(index > 0 ? index : cyclic(24) + 1, false);
       break;
     case ListNumberingType::kGreekUpper:
-      io::TextUtil::AppendUtf8(num, 0x391 + cyclic(24));
+      num = ToGreek(index > 0 ? index : cyclic(24) + 1, true);
       break;
     case ListNumberingType::kZapfDingbats1:
-      io::TextUtil::AppendUtf8(num, 0x2460 + cyclic(10));
+      // Font-specific codes 172..181 are the circled digits 1..10; Java
+      // continues into the following dingbats (index + 171), up to code 255.
+      io::TextUtil::AppendUtf8(
+          num, 172 + (index > 0 ? (index - 1) % 84 : cyclic(84)));
       break;
   }
   return pre + num + post;
+}
+
+std::shared_ptr<PdfFont> ListRenderer::SymbolFont(ListNumberingType type) {
+  bool greek = type == ListNumberingType::kGreekLower ||
+               type == ListNumberingType::kGreekUpper;
+  if (!greek && type != ListNumberingType::kZapfDingbats1) return nullptr;
+  auto& font = greek ? symbol_font_ : zapf_dingbats_font_;
+  if (!font) {
+    // Symbol uses its built-in encoding so that Unicode Greek (and the ASCII
+    // pre/post text) maps to Symbol codes; ZapfDingbats is font-specific.
+    font = greek ? kernel::PdfFontFactory::CreateFont(
+                       io::standard_fonts::kSymbol, io::PdfEncodings::kSymbol)
+                 : kernel::PdfFontFactory::CreateFont(
+                       io::standard_fonts::kZapfdingbats);
+  }
+  return font;
 }
 
 LayoutResult ListRenderer::Layout(LayoutContext& layout_context) {
@@ -1358,8 +1428,10 @@ LayoutResult ListRenderer::Layout(LayoutContext& layout_context) {
           symbol = std::make_shared<TextRenderer>(
               std::static_pointer_cast<IElement>(*t), (*t)->GetText());
         } else if (auto* nt = std::any_cast<ListNumberingType>(item_symbol)) {
-          (void)nt;
-          symbol = std::make_shared<TextRenderer>(nullptr, MakeSymbol(index));
+          symbol =
+              std::make_shared<TextRenderer>(nullptr, MakeSymbol(index, *nt));
+          if (auto font = SymbolFont(*nt))
+            symbol->SetPropertyAny(property::kFont, font);
         }
       }
       if (!symbol) {
@@ -1369,6 +1441,10 @@ LayoutResult ListRenderer::Layout(LayoutContext& layout_context) {
               (*list_text)->GetText());
         } else {
           symbol = std::make_shared<TextRenderer>(nullptr, MakeSymbol(index));
+          const std::any* raw = GetPropertyAny(property::kListSymbol);
+          if (auto* t = raw ? std::any_cast<ListNumberingType>(raw) : nullptr)
+            if (auto font = SymbolFont(*t))
+              symbol->SetPropertyAny(property::kFont, font);
         }
       }
       symbol->SetParent(item);

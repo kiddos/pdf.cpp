@@ -2,8 +2,11 @@
 // helpers; see BUGS.md).
 #include "pdfcpp/io/exceptions/io_exception.h"
 #include "pdfcpp/io/font/cmap.h"
+#include "pdfcpp/io/font/font_program.h"
 #include "pdfcpp/io/font/pdf_encodings.h"
+#include "pdfcpp/io/font/true_type_font.h"
 #include "pdfcpp/io/image/image_data.h"
+#include "pdfcpp/io/source/pdf_tokenizer.h"
 #include "pdfcpp/io/source/random_access_source.h"
 #include "test_harness.h"
 
@@ -110,6 +113,139 @@ TEST(WindowAndGroupedSourcesRejectNegativePositions) {
        std::make_shared<ArrayRandomAccessSource>(Bytes{9})});
   EXPECT_EQ(grouped.Get(2), 9);
   EXPECT_EQ(grouped.Get(-1), -1);
+}
+
+static void PutBe16(Bytes& b, uint32_t v) {
+  b.push_back(static_cast<uint8_t>(v >> 8));
+  b.push_back(static_cast<uint8_t>(v));
+}
+
+/// Minimal sfnt container holding the given tables (checksums are not
+/// verified by the parser).
+static Bytes MakeSfnt(const std::map<std::string, Bytes>& tables) {
+  Bytes f;
+  PutBe32(f, 0x00010000);
+  PutBe16(f, static_cast<uint32_t>(tables.size()));
+  PutBe16(f, 0);
+  PutBe16(f, 0);
+  PutBe16(f, 0);
+  uint32_t offset = 12 + 16 * static_cast<uint32_t>(tables.size());
+  for (const auto& [tag, data] : tables) {
+    for (char c : tag) f.push_back(static_cast<uint8_t>(c));
+    PutBe32(f, 0);
+    PutBe32(f, offset);
+    PutBe32(f, static_cast<uint32_t>(data.size()));
+    offset += (static_cast<uint32_t>(data.size()) + 3) & ~3u;
+  }
+  for (const auto& kv : tables) {
+    f.insert(f.end(), kv.second.begin(), kv.second.end());
+    while (f.size() % 4) f.push_back(0);
+  }
+  return f;
+}
+
+/// A three-glyph TrueType font: cmap format 12 maps 'A' to glyph 1 and has a
+/// second group at the top of the 32-bit range; the kern table has a pair whose
+/// left glyph id is >= 32768.
+static Bytes MakeTestFont() {
+  Bytes head(54, 0);
+  head[18] = 0x03;  // unitsPerEm 1000
+  head[19] = 0xE8;
+  Bytes hhea(36, 0);
+  hhea[35] = 1;  // numberOfHMetrics
+  Bytes maxp;
+  PutBe32(maxp, 0x00005000);
+  PutBe16(maxp, 3);  // numGlyphs
+  Bytes hmtx;
+  PutBe16(hmtx, 500);
+  PutBe16(hmtx, 0);
+  Bytes cmap;
+  PutBe16(cmap, 0);   // version
+  PutBe16(cmap, 1);   // numTables
+  PutBe16(cmap, 3);   // platform: Windows
+  PutBe16(cmap, 10);  // encoding: UCS-4
+  PutBe32(cmap, 12);  // subtable offset
+  PutBe16(cmap, 12);  // format 12
+  PutBe16(cmap, 0);
+  PutBe32(cmap, 16 + 2 * 12);  // length
+  PutBe32(cmap, 0);            // language
+  PutBe32(cmap, 2);            // numGroups
+  for (uint32_t v : {0x41u, 0x41u, 1u, 0xFFFF0000u, 0xFFFFFFFFu, 2u})
+    PutBe32(cmap, v);
+  Bytes kern;
+  PutBe16(kern, 0);  // version
+  PutBe16(kern, 1);  // nTables
+  PutBe16(kern, 0);  // subtable version
+  PutBe16(kern, 14 + 2 * 6);
+  PutBe16(kern, 0x0001);  // horizontal, format 0
+  PutBe16(kern, 2);       // nPairs
+  PutBe16(kern, 0);
+  PutBe16(kern, 0);
+  PutBe16(kern, 0);
+  for (uint32_t v : {0x8001u, 2u, static_cast<uint32_t>(-50 & 0xFFFF), 1u, 2u,
+                     static_cast<uint32_t>(-30 & 0xFFFF)})
+    PutBe16(kern, v);
+  return MakeSfnt({{"head", head},
+                   {"hhea", hhea},
+                   {"maxp", maxp},
+                   {"hmtx", hmtx},
+                   {"cmap", cmap},
+                   {"kern", kern}});
+}
+
+// BUGS.md #4: kerning pairs with a left glyph id >= 32768 are found, a format
+// 12 group ending at 0xFFFFFFFF does not wrap around (and hang), and a table
+// directory running past the data is rejected.
+TEST(TrueTypeKerningCmap12AndDirectoryBounds) {
+  TrueTypeFont font(MakeTestFont());
+  const auto& cmap = font.GetActiveCmap();
+  EXPECT_TRUE(cmap.count(0x41) == 1 && cmap.at(0x41).first == 1);
+  EXPECT_EQ(static_cast<int>(cmap.size()), 1);
+  EXPECT_EQ(font.GetKerning(Glyph(0x8001, 0, -1), Glyph(2, 0, -1)), -50);
+  EXPECT_EQ(font.GetKerning(Glyph(1, 0, -1), Glyph(2, 0, -1)), -30);
+
+  Bytes truncated = MakeTestFont();
+  truncated[5] = 50;  // numTables
+  truncated.resize(12 + 16 * 3);
+  EXPECT_THROW(TrueTypeFont{truncated});
+}
+
+// BUGS.md #6: negative codes in custom encodings are ignored instead of
+// written before the start of the tables.
+TEST(CustomFontEncodingIgnoresNegativeCodes) {
+  auto simple = FontEncoding::CreateFontEncoding("# -1 0041 0042");
+  EXPECT_TRUE(!simple->CanEncode(0x41));
+  EXPECT_TRUE(!simple->CanEncode(0x42));
+  auto full = FontEncoding::CreateFontEncoding("# full -3 A 0041 66 B 0042");
+  EXPECT_TRUE(!full->CanEncode(0x41));
+  EXPECT_TRUE(full->CanEncode(0x42));
+  EXPECT_EQ(full->ConvertToByte(0x42), 66);
+  EXPECT_EQ(full->GetDifference(66), std::string("B"));
+  EXPECT_EQ(full->GetDifference(-1), std::string());
+  EXPECT_EQ(full->GetDifference(256), std::string());
+}
+
+// BUGS.md #9: searching for %%EOF in a file shorter than the look-back window
+// never seeks before the start.
+TEST(GetNextEofOnTinyInput) {
+  PdfTokenizer tiny(RandomAccessSourceFactory().CreateSource(BytesOf("ab")));
+  EXPECT_THROW(tiny.GetNextEof());
+  EXPECT_TRUE(tiny.GetPosition() >= 0);
+  PdfTokenizer eof(RandomAccessSourceFactory().CreateSource(BytesOf("%%EOF")));
+  EXPECT_EQ(eof.GetNextEof(), 5);
+}
+
+// BUGS.md #10: only a real "StartFontMetrics" header selects the AFM parser,
+// and inputs shorter than the magic are not over-read.
+TEST(FontProgramFactoryChecksWholeAfmMagic) {
+  std::string message;
+  try {
+    FontProgramFactory::CreateFont(BytesOf("Starfish, not a font at all"));
+  } catch (const IoException& e) {
+    message = e.what();
+  }
+  EXPECT_TRUE(message.find("true type or open type") != std::string::npos);
+  EXPECT_THROW(FontProgramFactory::CreateFont(BytesOf("St")));
 }
 
 TEST_MAIN()

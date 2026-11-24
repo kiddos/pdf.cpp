@@ -57,7 +57,14 @@ More in `examples/`: `hello_world`, `report` (lists, multi-page tables with repe
 outlines), `barcodes` (QR Code, Code 128, EAN-13, Code 39), `forms` (AcroForm fields and optional
 flattening), `canvas_graphics` (vector paths, FormXObjects, annotations, page footers), `stamp`
 (watermark an existing PDF, optional append mode), `merge`, `split`, `encrypt` (AES-256),
-`extract_text`, `edit_text` (find and replace text in an existing PDF), `sign`, and `verify_signature`.
+`extract_text`, `edit_text` (find and replace text in an existing PDF), `sign`, `verify_signature`,
+`layout_showcase` (text styles, alignment, borders, lists, tables with spans, fixed/rotated elements),
+`images` (layout and canvas images, soft masks, JPEG/PNG files), `fonts` (standard 14 fonts, embedded
+TrueType, Identity-H Unicode text, kerning), `bookmarks` (clickable table of contents, nested outlines,
+internal links), `pdf_info` (inspect version, encryption, pages, fonts, bookmarks and form fields),
+`content_parser` (custom `IEventListener`: text positions, fonts and image extraction),
+`raw_objects` (hand-written content streams and dictionaries, named destinations, object-graph dump)
+and `compress` (rewrite with full compression, or decompress for debugging).
 
 ### Differences from the Java API
 

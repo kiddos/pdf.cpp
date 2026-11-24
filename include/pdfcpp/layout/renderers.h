@@ -278,6 +278,9 @@ class ImageRenderer : public AbstractRenderer {
   void CalculateImageSize(float available_width, float available_height);
 
  private:
+  /// Size of the bounding box of the image after kRotationAngle is applied.
+  float RotatedWidth() const;
+  float RotatedHeight() const;
   float image_width_ = 0, image_height_ = 0;
 };
 
@@ -366,8 +369,13 @@ class ListRenderer : public BlockRenderer {
   }
 
  private:
-  std::string MakeSymbol(int index) const;
+  std::string MakeSymbol(
+      int index, std::optional<ListNumberingType> type = std::nullopt) const;
+  /// The font list symbols of `type` must be drawn in (Symbol for Greek,
+  /// ZapfDingbats for dingbats), or nullptr for the inherited font.
+  std::shared_ptr<kernel::PdfFont> SymbolFont(ListNumberingType type);
   bool symbols_assigned_ = false;
+  std::shared_ptr<kernel::PdfFont> symbol_font_, zapf_dingbats_font_;
 };
 
 /// Port of ListItemRenderer.

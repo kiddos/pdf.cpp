@@ -1,7 +1,10 @@
+#include <cstring>
 #include <filesystem>
 
+#include "pdfcpp/io/font/pdf_encodings.h"
 #include "pdfcpp/io/source/byte_utils.h"
 #include "pdfcpp/io/source/pdf_tokenizer.h"
+#include "pdfcpp/io/util/stream_util.h"
 #include "pdfcpp/kernel/colors/color.h"
 #include "pdfcpp/kernel/font/pdf_font.h"
 #include "pdfcpp/kernel/pdf/canvas/parser/pdf_canvas_processor.h"
@@ -10,6 +13,7 @@
 #include "pdfcpp/kernel/pdf/pdf_document.h"
 #include "pdfcpp/kernel/pdf/pdf_reader.h"
 #include "pdfcpp/kernel/pdf/pdf_writer.h"
+#include "pdfcpp/kernel/pdf/xobject/pdf_xobject.h"
 #include "test_harness.h"
 
 using namespace pdfcpp;
@@ -453,6 +457,309 @@ TEST(EmptyStringBaselineIsNotNegative) {
   processor.ProcessPageContent(doc.GetPage(1));
   for (float w : collector.widths) EXPECT_TRUE(w >= 0);
   doc.Close();
+}
+
+// ------------------------------------------------- hand-assembled documents
+
+/// `<< entries /Length n >> stream ... endstream` for an unfiltered stream.
+static std::string StreamObject(const std::string& entries,
+                                const std::string& data) {
+  return "<< " + entries + " /Length " + std::to_string(data.size()) +
+         " >>\nstream\n" + data + "\nendstream";
+}
+
+/// A PDF made of the given objects (number -> body) whose cross-reference is an
+/// uncompressed xref stream, written as the last object. Its entries always use
+/// field widths 1 4 2; `xref_entries` (normally "/W [1 4 2]") lets tests
+/// declare other /W or /Index values. `compressed` adds type 2 entries:
+/// object number -> {object stream number, index}.
+static Bytes AssemblePdf(
+    const std::map<int, std::string>& objects,
+    const std::string& xref_entries = "/W [1 4 2]",
+    const std::map<int, std::pair<int, int>>& compressed = {}) {
+  std::string pdf = "%PDF-1.7\n%\xE2\xE3\xCF\xD3\n";
+  std::map<int, size_t> offsets;
+  int max_number = 0;
+  for (const auto& [number, body] : objects) {
+    offsets[number] = pdf.size();
+    pdf += std::to_string(number) + " 0 obj\n" + body + "\nendobj\n";
+    max_number = std::max(max_number, number);
+  }
+  for (const auto& kv : compressed) max_number = std::max(max_number, kv.first);
+  const int xref_number = max_number + 1;
+  offsets[xref_number] = pdf.size();
+  std::string rows;
+  auto put = [&rows](uint32_t v, int width) {
+    for (int k = width - 1; k >= 0; --k)
+      rows.push_back(static_cast<char>(v >> (8 * k)));
+  };
+  for (int i = 0; i <= xref_number; ++i) {
+    if (offsets.count(i)) {
+      put(1, 1);
+      put(static_cast<uint32_t>(offsets[i]), 4);
+      put(0, 2);
+    } else if (compressed.count(i)) {
+      put(2, 1);
+      put(static_cast<uint32_t>(compressed.at(i).first), 4);
+      put(static_cast<uint32_t>(compressed.at(i).second), 2);
+    } else {
+      put(0, 1);
+      put(0, 4);
+      put(i == 0 ? 0xFFFF : 0, 2);
+    }
+  }
+  pdf += std::to_string(xref_number) + " 0 obj\n" +
+         StreamObject("/Type /XRef /Size " + std::to_string(xref_number + 1) +
+                          " /Root 1 0 R " + xref_entries,
+                      rows) +
+         "\nendobj\n";
+  pdf += "startxref\n" + std::to_string(offsets[xref_number]) + "\n%%EOF\n";
+  return Bytes(pdf.begin(), pdf.end());
+}
+
+/// Catalog (1), page tree (2) and one empty page (3).
+static std::map<int, std::string> OnePageObjects() {
+  return {{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+          {2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+          {3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>"}};
+}
+
+// BUGS.md #12: malformed /Index and /W entries of an xref stream make the
+// reader rebuild the cross-reference instead of crashing or misreading it.
+TEST(XrefStreamWithBadIndexOrWidths) {
+  {
+    PdfDocument doc(PdfReader::FromBytes(AssemblePdf(OnePageObjects())));
+    EXPECT_TRUE(!doc.GetReader()->HasRebuiltXref());
+    EXPECT_EQ(doc.GetNumberOfPages(), 1);
+  }
+  for (const char* entries :
+       {"/W [1 4 2] /Index [(a) 5]", "/W [1 4 2] /Index [0 /Five]",
+        "/W [1 -4 2]", "/W [1 9 2]"}) {
+    PdfDocument doc(
+        PdfReader::FromBytes(AssemblePdf(OnePageObjects(), entries)));
+    EXPECT_TRUE(doc.GetReader()->HasRebuiltXref());
+    EXPECT_EQ(doc.GetNumberOfPages(), 1);
+  }
+}
+
+// BUGS.md #12: an object stream's /N is checked before the offset tables are
+// allocated.
+TEST(ObjectStreamCountIsBounded) {
+  const std::string content = "5 0 << /Title (in stream) >>";
+  auto with_count = [&](const std::string& n) {
+    auto objects = OnePageObjects();
+    objects[4] = StreamObject("/Type /ObjStm /N " + n + " /First 4", content);
+    return AssemblePdf(objects, "/W [1 4 2]", {{5, {4, 0}}});
+  };
+  {
+    PdfDocument doc(PdfReader::FromBytes(with_count("1")));
+    auto obj = PdfCast<PdfDictionary>(doc.GetPdfObject(5));
+    EXPECT_TRUE(obj && obj->GetAsString(PdfName::kTitle));
+  }
+  for (const char* n : {"2000000000", "-1"}) {
+    PdfDocument doc(PdfReader::FromBytes(with_count(n)));
+    bool limited = false;
+    try {
+      doc.GetPdfObject(5);
+    } catch (const MemoryLimitsAwareException&) {
+      limited = true;
+    }
+    EXPECT_TRUE(limited);
+  }
+}
+
+/// Number of references reachable from `obj` that do not resolve to an object.
+static int CountDanglingReferences(PdfDocument& doc, const PdfObjectPtr& obj,
+                                   std::set<int>& seen) {
+  if (!obj) return 0;
+  if (obj->IsIndirectReference()) {
+    int number = static_cast<PdfIndirectReference&>(*obj).GetObjNumber();
+    if (!seen.insert(number).second) return 0;
+    PdfObjectPtr target = doc.GetPdfObject(number);
+    return target ? CountDanglingReferences(doc, target, seen) : 1;
+  }
+  int dangling = 0;
+  if (obj->IsDictionary() || obj->IsStream()) {
+    auto& dict = static_cast<PdfDictionary&>(*obj);
+    for (const auto& key : dict.KeySet())
+      dangling += CountDanglingReferences(doc, dict.Get(key, false), seen);
+  } else if (obj->IsArray()) {
+    auto& array = static_cast<PdfArray&>(*obj);
+    for (int i = 0; i < array.size(); ++i)
+      dangling += CountDanglingReferences(doc, array.Get(i, false), seen);
+  }
+  return dangling;
+}
+
+// BUGS.md #16: in append mode every object created or modified before close()
+// (including those created while flushing, e.g. extra object streams under full
+// compression) is written; nothing referenced is left free.
+TEST(AppendModeWritesAllModifiedObjects) {
+  Bytes original = WriteSimplePdf(true, 1);
+  io::ByteArrayOutputStream out;
+  {
+    auto reader = PdfReader::FromBytes(original);
+    PdfWriter writer(out, WriterProperties().SetFullCompressionMode(true));
+    PdfDocument doc(*reader, writer, StampingProperties().UseAppendMode());
+    auto list = std::make_shared<PdfArray>();
+    for (int i = 0; i < 300; ++i) {
+      auto item = std::make_shared<PdfDictionary>();
+      item->Put(PdfName::kTitle,
+                std::make_shared<PdfString>("item " + std::to_string(i)));
+      item->MakeIndirect(&doc);
+      list->Add(item);
+    }
+    list->MakeIndirect(&doc);
+    doc.GetCatalog().GetPdfObject()->Put(PdfName::Of("TestItems"), list);
+    doc.GetCatalog().GetPdfObject()->SetModified();
+    PdfCanvas canvas(doc.AddNewPage());
+    canvas.BeginText()
+        .SetFontAndSize(PdfFontFactory::CreateFont(), 12)
+        .MoveText(72, 700)
+        .ShowText("appended page")
+        .EndText();
+    doc.Close();
+  }
+  PdfDocument doc(PdfReader::FromBytes(out.ToByteArray()));
+  EXPECT_EQ(doc.GetNumberOfPages(), 2);
+  std::set<int> seen;
+  EXPECT_EQ(CountDanglingReferences(doc, doc.GetTrailer(), seen), 0);
+  auto list =
+      doc.GetCatalog().GetPdfObject()->GetAsArray(PdfName::Of("TestItems"));
+  EXPECT_TRUE(list != nullptr);
+  if (list) {
+    EXPECT_EQ(list->size(), 300);
+    auto last = list->GetAsDictionary(299);
+    EXPECT_TRUE(last && last->GetAsString(PdfName::kTitle)->ToUnicodeString() ==
+                            "item 299");
+  }
+}
+
+// BUGS.md #17: a Type0 font with a TrueType program is always embedded:
+// kForceNotEmbedded and licensing restrictions are errors.
+TEST(Type0TrueTypeIsAlwaysEmbedded) {
+  std::string path = pdfcpp_test::ReferenceDir() +
+                     "/kernel/src/test/resources/com/itextpdf/kernel/fonts/"
+                     "NotoSans-Regular.ttf";
+  if (!std::filesystem::exists(path)) return;
+  Bytes ttf = io::StreamUtil::ReadFile(path);
+  auto font = PdfFontFactory::CreateFont(ttf, io::PdfEncodings::kIdentityH,
+                                         EmbeddingStrategy::kPreferNotEmbedded);
+  EXPECT_TRUE(font->IsEmbedded());
+  EXPECT_THROW(PdfFontFactory::CreateFont(
+      ttf, io::PdfEncodings::kIdentityH, EmbeddingStrategy::kForceNotEmbedded));
+  // OS/2 fsType 2: restricted license embedding
+  Bytes restricted = ttf;
+  int num_tables = (restricted[4] << 8) | restricted[5];
+  bool patched = false;
+  for (int k = 0; k < num_tables; ++k) {
+    size_t rec = 12 + 16 * static_cast<size_t>(k);
+    if (std::memcmp(&restricted[rec], "OS/2", 4) != 0) continue;
+    size_t os2 = (size_t(restricted[rec + 8]) << 24) |
+                 (size_t(restricted[rec + 9]) << 16) |
+                 (size_t(restricted[rec + 10]) << 8) | restricted[rec + 11];
+    restricted[os2 + 8] = 0;
+    restricted[os2 + 9] = 2;
+    patched = true;
+  }
+  EXPECT_TRUE(patched);
+  EXPECT_THROW(
+      PdfFontFactory::CreateFont(restricted, io::PdfEncodings::kIdentityH));
+}
+
+// BUGS.md #20: a form added under a chosen name is registered like any other
+// resource (found by GetResourceName, not handed out twice) and the change to
+// an indirect resource dictionary survives an append-mode update.
+TEST(AddFormWithNameRegistersResource) {
+  auto objects = OnePageObjects();
+  objects[3] =
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+      "/Resources 4 0 R >>";
+  objects[4] = "<< >>";
+  Bytes original = AssemblePdf(objects);
+  io::ByteArrayOutputStream out;
+  {
+    auto reader = PdfReader::FromBytes(original);
+    PdfWriter writer(out);
+    PdfDocument doc(*reader, writer, StampingProperties().UseAppendMode());
+    PdfResources* resources = doc.GetPage(1)->GetResources();
+    PdfFormXObject form(Rectangle(0, 0, 10, 10));
+    auto name = resources->AddForm(form, PdfName::Of("Stamp"));
+    EXPECT_EQ(name->GetValue(), std::string("Stamp"));
+    auto found = resources->GetResourceName(form.GetPdfObject().get());
+    EXPECT_TRUE(found && found->GetValue() == "Stamp");
+    PdfFormXObject other(Rectangle(0, 0, 5, 5));
+    EXPECT_TRUE(resources->AddForm(other, PdfName::Of("Stamp"))->GetValue() !=
+                "Stamp");
+    doc.Close();
+  }
+  PdfDocument doc(PdfReader::FromBytes(out.ToByteArray()));
+  auto xobjects =
+      doc.GetPage(1)->GetResources()->GetPdfObject()->GetAsDictionary(
+          PdfName::kXObject);
+  EXPECT_TRUE(xobjects && xobjects->GetAsStream(PdfName::Of("Stamp")));
+}
+
+// BUGS.md #22: excluded keys are put back when cloning fails, and null entries
+// print as "null".
+TEST(DictionaryCloneRestoresExcludedKeys) {
+  auto objects = OnePageObjects();
+  // An object stream whose /Length runs past the end of the file: reading its
+  // bytes (as cloning does) throws.
+  objects[4] =
+      "<< /Type /ObjStm /N 0 /First 0 /Title (kept) /Length 999999 >>\n"
+      "stream\nabc\nendstream";
+  PdfDocument doc(PdfReader::FromBytes(AssemblePdf(objects)));
+  auto stream = PdfCast<PdfStream>(doc.GetPdfObject(4));
+  EXPECT_TRUE(stream != nullptr);
+  if (stream) {
+    const PdfDictionary& dict = *stream;
+    EXPECT_THROW(dict.Clone(std::vector<PdfNamePtr>{PdfName::kTitle}));
+    EXPECT_TRUE(stream->ContainsKey(PdfName::kTitle));
+  }
+  PdfArray array;
+  array.Add(nullptr);
+  EXPECT_EQ(array.ToString(), std::string("[null ]"));
+  PdfDictionary with_null;
+  with_null.Put(PdfName::kTitle, nullptr);
+  EXPECT_TRUE(with_null.ToString().find("null") != std::string::npos);
+}
+
+// BUGS.md #25: a form XObject whose stream cannot be decoded does not leave
+// the nesting depth raised: after many failures, forms are still processed.
+TEST(UndecodableFormDoesNotLeakDepth) {
+  std::map<int, std::string> objects = {
+      {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+      {2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"},
+      {3,
+       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 5 0 R "
+       "/Resources << /XObject << /Bad 7 0 R >> >> >>"},
+      {4,
+       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 6 0 R "
+       "/Resources << /XObject << /Good 8 0 R >> >> >>"},
+      {5, StreamObject("", "/Bad Do")},
+      {6, StreamObject("", "/Good Do")},
+      {7, StreamObject("/Type /XObject /Subtype /Form /BBox [0 0 10 10] "
+                       "/Filter /NoSuchFilter",
+                       "abc")},
+      {8, StreamObject("/Type /XObject /Subtype /Form /BBox [0 0 100 100] "
+                       "/Resources << /Font << /F1 9 0 R >> >>",
+                       "BT /F1 12 Tf 10 10 Td (Hi) Tj ET")},
+      {9, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}};
+  PdfDocument doc(PdfReader::FromBytes(AssemblePdf(objects)));
+  BaselineCollector collector;
+  PdfCanvasProcessor processor(collector);
+  int failures = 0;
+  for (int i = 0; i < 40; ++i) {
+    try {
+      processor.ProcessPageContent(doc.GetPage(1));
+    } catch (const std::exception&) {
+      ++failures;
+    }
+  }
+  EXPECT_EQ(failures, 40);
+  processor.ProcessPageContent(doc.GetPage(2));
+  EXPECT_EQ(static_cast<int>(collector.widths.size()), 1);
 }
 
 TEST_MAIN()

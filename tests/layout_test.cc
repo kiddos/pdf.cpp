@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <set>
 
 #include "pdfcpp/io/font/pdf_encodings.h"
 #include "pdfcpp/kernel/pdf/canvas/parser/pdf_canvas_processor.h"
@@ -268,6 +269,39 @@ TEST(ListItemSplitKeepsSymbolLeft) {
   if (symbol && text) EXPECT_TRUE(symbol->x + 5 < text->x);
 }
 
+// Greek list symbols are drawn in the Symbol font (Java's
+// ConstantFontTextRenderer); the alphabet has 24 letters without final sigma
+// and continues with two-letter numbers. Dingbat lists use ZapfDingbats.
+TEST(GreekAndDingbatListSymbolsUseTheirFonts) {
+  std::string path = "layout_list_symbol_fonts.pdf";
+  {
+    PdfDocument pdf(std::make_unique<PdfWriter>(path));
+    Document document(pdf, PageSize::kA4);
+    auto greek = Make<List>(ListNumberingType::kGreekLower);
+    for (int i = 1; i <= 26; ++i) greek->Add("item" + std::to_string(i));
+    document.Add(greek);
+    auto dingbats = Make<List>(ListNumberingType::kZapfDingbats1);
+    dingbats->Add("first").Add("second");
+    document.Add(dingbats);
+    document.Close();
+  }
+  PdfDocument doc(std::make_unique<PdfReader>(path));
+  std::string text = PdfTextExtractor::GetTextFromPage(doc.GetPage(1));
+  EXPECT_TRUE(text.find("\xce\xb1. item1") != std::string::npos);   // α
+  EXPECT_TRUE(text.find("\xcf\x83. item18") != std::string::npos);  // σ
+  EXPECT_TRUE(text.find("\xcf\x89. item24") != std::string::npos);  // ω
+  EXPECT_TRUE(text.find("\xce\xb1\xce\xb2. item26") != std::string::npos);
+  EXPECT_TRUE(text.find("\xcf\x82") == std::string::npos);  // no final ς
+  std::set<std::string> fonts;
+  auto font_dict = doc.GetPage(1)->GetResources()->GetResource(PdfName::kFont);
+  for (const auto& key : font_dict->KeySet())
+    fonts.insert(font_dict->GetAsDictionary(key)
+                     ->GetAsName(PdfName::kBaseFont)
+                     ->GetValue());
+  EXPECT_TRUE(fonts.count("Symbol") == 1);
+  EXPECT_TRUE(fonts.count("ZapfDingbats") == 1);
+}
+
 // BUGS.md #36: a percentage width given to SetFixedPosition is applied once.
 TEST(FixedPositionPercentWidth) {
   std::string path = "layout_fixed_width.pdf";
@@ -310,4 +344,103 @@ TEST(ZeroSizedImage) {
               s.find("inf") == std::string::npos);
 }
 
+// BUGS.md #37: when a line wraps at a break whose x is 0 (everything before it
+// has zero width), the pieces from the break on are dropped from the line, not
+// drawn there and again on the next line.
+TEST(WrapAfterZeroWidthStartDoesNotDuplicate) {
+  io::ByteArrayOutputStream baos;
+  {
+    PdfWriter writer(baos);
+    PdfDocument pdf(writer);
+    Document document(pdf, PageSize::kA4);
+    auto p = Make<Paragraph>();
+    // a zero-sized inline image, then one word made of two chunks that is
+    // too wide for the rest of the line
+    p->Add(
+        Make<Image>(std::make_shared<PdfFormXObject>(Rectangle(0, 0, 0, 0))));
+    p->Add(Make<Text>("HEADX"));
+    p->Add(Make<Text>(std::string(50, 'W')));
+    document.Add(p);
+    document.Close();
+  }
+  PdfDocument doc(PdfReader::FromBytes(baos.ToByteArray()));
+  EXPECT_EQ(CountOccurrences(doc, "HEADX"), 1);
+}
+
+// BUGS.md #37: an inline image takes the room of its paddings and borders in
+// the line (ImageRenderer draws the image inside them).
+TEST(InlineImageIncludesBordersAndPaddings) {
+  io::ByteArrayOutputStream baos;
+  {
+    PdfWriter writer(baos);
+    PdfDocument pdf(writer);
+    Document document(pdf, PageSize::kA4);
+    auto data = io::ImageDataFactory::Create(2, 2, 1, 8, Bytes(4, 0x80));
+    auto image = Make<Image>(data);
+    image->ScaleAbsolute(20, 20);
+    image->SetBorder(std::make_shared<SolidBorder>(color_constants::kRed, 5));
+    image->SetPadding(3);
+    auto p = Make<Paragraph>();
+    p->Add(image);
+    p->Add(Make<Text>("AFTER"));
+    document.Add(p);
+    document.Close();
+  }
+  PdfDocument doc(PdfReader::FromBytes(baos.ToByteArray()));
+  auto words = WordsOnPage(doc, 1);
+  auto after = FindWord(words, "AFTER");
+  EXPECT_TRUE(after != nullptr);
+  // left margin 36 + 3 + 5 + 20 + 5 + 3
+  if (after) EXPECT_NEAR(after->x, 72.f, 0.5f);
+}
+
+// BUGS.md #37: a paragraph with a fixed height that is split keeps only the
+// rest of that height for its continuation.
+TEST(FixedHeightParagraphSplit) {
+  io::ByteArrayOutputStream baos;
+  {
+    PdfWriter writer(baos);
+    PdfDocument pdf(writer);
+    Document document(pdf, PageSize::kA4);
+    std::string text;
+    for (int i = 0; i < 50; ++i) text += "line " + std::to_string(i) + "\n";
+    auto p = Make<Paragraph>(text);
+    p->SetHeight(1000);
+    document.Add(p);
+    document.Add(Make<Paragraph>("NEXTPARA"));
+    document.Close();
+  }
+  PdfDocument doc(PdfReader::FromBytes(baos.ToByteArray()));
+  // The page holds about 770pt, so 230pt of the 1000pt remain for page 2 and
+  // the next paragraph follows on that page (re-applying the whole height
+  // pushed it to page 3).
+  EXPECT_EQ(doc.GetNumberOfPages(), 2);
+  auto words = WordsOnPage(doc, 2);
+  auto next = FindWord(words, "NEXTPARA");
+  EXPECT_TRUE(next != nullptr);
+  if (next) EXPECT_TRUE(next->y < 806 - 200 && next->y > 806 - 270);
+}
+
 TEST_MAIN()
+
+// A rotated image occupies the bounding box of the rotated rectangle, so the
+// content after it starts below that box (Java ImageRenderer).
+TEST(RotatedImageOccupiesRotatedBoundingBox) {
+  std::string path = "layout_rotated_image.pdf";
+  {
+    PdfDocument pdf(std::make_unique<PdfWriter>(path));
+    Document document(pdf, PageSize::kA4);
+    auto data = io::ImageDataFactory::Create(4, 2, 1, 8, Bytes(8, 0x80));
+    // 100 x 50 pt turned by 90 degrees: the box is 50 wide and 100 high.
+    document.Add(Make<Image>(data)->ScaleAbsolute(100, 50).SetRotationAngle(
+        std::acos(-1.0) / 2));
+    document.Add(Make<Paragraph>("after"));
+    document.Close();
+  }
+  PdfDocument doc(std::make_unique<PdfReader>(path));
+  auto words = WordsOnPage(doc, 1);
+  const Word* after = FindWord(words, "after");
+  EXPECT_TRUE(after != nullptr);
+  // The top margin is 36 pt, so the image box ends at 842 - 36 - 100 = 706.
+  if (after) EXPECT_TRUE(after->y < 706);
+}
